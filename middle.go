@@ -72,7 +72,7 @@ func (conf *Config) init() {
 		conf.WriteWait = 10 * time.Second
 	}
 	if conf.PongWait == 0 {
-		conf.PongWait = (10 * conf.PingPeriod) / 9
+		conf.PongWait = 1 + ((10 * conf.PingPeriod) / 9)
 	}
 }
 
