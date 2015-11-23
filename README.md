@@ -1,6 +1,6 @@
 # Wemdigo  
 
-**We**bsocket **M**i**d**dlelayer in *Go*.  
+**We**bsocket **M**i**d**dlelayer in **Go**.  
 
 
 
