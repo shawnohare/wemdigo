@@ -7,16 +7,14 @@ import (
 	"log"
 )
 
+// MessageHandler funcs are responsible for processing websocket messages.
 type MessageHandler func(int, []byte) (int, []byte, error)
 
+// Middleware between a client and server that would normally connect via
+// a single websocket.
 type Middleware struct {
 	conns    map[string]*Conn
 	messages chan message
-	// ClientConn *Conn
-	// ServerConn *Conn
-	// Conns         Conns
-	// ClientHandler MessageHandler
-	// ServerHandler MessageHandler
 }
 
 func (m Middleware) redirect(msg message) error {

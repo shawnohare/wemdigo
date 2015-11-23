@@ -103,11 +103,6 @@ func (c Conn) writeMessages() {
 			}
 
 		case <-ticker.C:
-			// FIXME: remove WriteControl?
-			// deadline := time.Now().Add(pongWait)
-			// if err := ws.WriteControl(websocket.PingMessage, nil, deadline) {
-			// 	return
-			// }
 			if err := c.write(websocket.PingMessage, []byte{}); err != nil {
 				return
 			}
