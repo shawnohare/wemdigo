@@ -1,5 +1,8 @@
 // Package wemdigo provides structs that allows for bidirectional middle
 // processing of websocket communications between a client and server.
+// The wemdigo Middle layer expects that all peers can respond to control
+// messages.  In particular, a Middle instance expects regular pong
+// responses after it sends a ping.
 package wemdigo
 
 import (
@@ -37,20 +40,40 @@ type MessageHandler func(*Message) (*Message, bool, error)
 
 // Config parameters used to create a new Middle instance.
 type Config struct {
+	// Required params.
 	ClientWebsocket *websocket.Conn
 	ClientHandler   MessageHandler
 	ServerWebsocket *websocket.Conn
 	ServerHandler   MessageHandler
-	// Optional params
-	// WriteWait is the time allowed to write a message to the peer.
-	WriteWait time.Duration
+
+	// Optional params.
+
 	// PingPeriod specifies how often to ping the peer.  It determines
 	// a slightly longer pong wait time.
 	PingPeriod time.Duration
+
 	// Pong Period specifies how long to wait for a pong response.  It
-	// should be longer than the PingPeriod, and generally does not need
-	// to be set by the user.
+	// should be longer than the PingPeriod.  If set to the default value,
+	// a new Middle layer will calculate PongWait from the PingPeriod.
+	// As such, this param does not usually need to be set.
 	PongWait time.Duration
+
+	// WriteWait is the time allowed to write a message to the peer.
+	// This does not usually need to be set by the user.
+	WriteWait time.Duration
+}
+
+func (conf *Config) init() {
+	// Process the config
+	if conf.PingPeriod == 0 {
+		conf.PingPeriod = 60 * time.Second
+	}
+	if conf.WriteWait == 0 {
+		conf.WriteWait = 10 * time.Second
+	}
+	if conf.PongWait == 0 {
+		conf.PongWait = (10 * conf.PingPeriod) / 9
+	}
 }
 
 // Middle between a client and server that would normally connect via
@@ -122,21 +145,11 @@ func (m Middle) Run() {
 }
 
 func New(conf *Config) *Middle {
-
-	// Inspect the optional connection stay alive config params and set
-	// them if necessary.
-	if conf.PingPeriod == 0 {
-		conf.PingPeriod = 60 * time.Second
-	}
-	if conf.WriteWait == 0 {
-		conf.WriteWait = 10 * time.Second
-	}
-	if conf.PongWait == 0 {
-		conf.PongWait = (10 * conf.PingPeriod) / 9
-	}
+	conf.init()
 
 	c := newConnection(conf.ClientWebsocket, conf.ClientHandler, Client, conf)
 	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, conf)
+
 	return &Middle{
 		conns: map[string]*connection{
 			Client: c,
