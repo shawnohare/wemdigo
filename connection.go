@@ -79,7 +79,6 @@ func (c *connection) readMessages() {
 			break
 		}
 
-		log.Println("sending message to proc channel")
 		c.proc <- &Message{mt, raw, c.name}
 	}
 }
@@ -106,10 +105,8 @@ func (c *connection) writeMessages() {
 			if err := c.write(msg); err != nil {
 				return
 			}
-
 		case <-ticker.C:
-			// FIXME
-			log.Println(c.name, "sending a ping.")
+			// log.Println(c.name, "sending a ping.")
 			control := &Message{websocket.PingMessage, nil, ""}
 			if err := c.write(control); err != nil {
 				return
