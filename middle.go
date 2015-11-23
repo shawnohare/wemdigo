@@ -1,6 +1,6 @@
-// Package gosm provides structs that allows for additional
+// Package wemdigo provides structs that allows for bidirectional middle
 // processing of websocket communications between a client and server.
-package gosm
+package wemdigo
 
 import (
 	"errors"
@@ -9,19 +9,19 @@ import (
 
 // MessageHandler funcs are responsible for processing websocket messages.
 // They should return a processed message, an indication of whether the
-// message should be forwarded, and a possible error.  When a Middleware
+// message should be forwarded, and a possible error.  When a Middle
 // instance encounters a handler error, it will shut down the underlying
 // websocket.
 type MessageHandler func(*Message) (*Message, bool, error)
 
-// Middleware between a client and server that would normally connect via
+// Middle between a client and server that would normally connect via
 // a single websocket.
-type Middleware struct {
+type Middle struct {
 	conns    map[string]*Conn
 	messages chan *Message
 }
 
-func (m Middleware) redirect(msg *Message) error {
+func (m Middle) redirect(msg *Message) error {
 
 	dest := Server
 	if msg.Origin == Server {
@@ -41,12 +41,12 @@ func (m Middleware) redirect(msg *Message) error {
 }
 
 // Process a websocket connection.
-func (m Middleware) processConn(c *Conn) {
+func (m Middle) processConn(c *Conn) {
 	go c.writeMessages()
 	c.readMessages(m.messages)
 }
 
-func (m Middleware) Shutdown() {
+func (m Middle) Shutdown() {
 	for _, conn := range m.conns {
 		conn.Websocket.Close()
 		close(conn.send)
@@ -54,7 +54,7 @@ func (m Middleware) Shutdown() {
 	close(m.messages)
 }
 
-func (m Middleware) Run() {
+func (m Middle) Run() {
 	for _, conn := range m.conns {
 		go m.processConn(conn)
 	}
@@ -69,8 +69,8 @@ func (m Middleware) Run() {
 	}
 }
 
-func New(clientConn *Conn, serverConn *Conn) *Middleware {
-	return &Middleware{
+func New(clientConn *Conn, serverConn *Conn) *Middle {
+	return &Middle{
 		conns:    map[string]*Conn{"client": clientConn, "server": serverConn},
 		messages: make(chan *Message),
 	}

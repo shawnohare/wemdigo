@@ -1,4 +1,4 @@
-package gosm
+package wemdigo
 
 import (
 	"log"
@@ -42,7 +42,7 @@ func (c *Conn) write(msg *Message) error {
 }
 
 // Process incoming messages from the websocket connection and
-// send the result to a Middleware hub for redirection.
+// send the result to a Middle hub for redirection.
 func (c *Conn) readMessages(middlewareChan chan *Message) {
 	ws := c.Websocket
 
@@ -85,7 +85,7 @@ func (c *Conn) readMessages(middlewareChan chan *Message) {
 	}
 }
 
-// writeMessages pumps messages from the Middleware hub to the  websocket.
+// writeMessages pumps messages from the Middle hub to the  websocket.
 // It also keeps the underlying websocket connection alive by sending pings.
 func (c Conn) writeMessages() {
 	ws := c.Websocket
