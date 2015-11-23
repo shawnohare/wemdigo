@@ -7,39 +7,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Some internal constants taken from the Gorilla websocket chat example.
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-)
-
 type connection struct {
-	Websocket *websocket.Conn
-	Handler   MessageHandler
-	name      string
-	send      chan *Message
+	ws   *websocket.Conn
+	h    MessageHandler
+	name string
+	send chan *Message // Channel to receive messages from Middle.
+	conf *Config       // Middleware conf so we may access keep alive times.
 }
 
 func (c *connection) write(msg *Message) error {
-	ws := c.Websocket
-	ws.SetWriteDeadline(time.Now().Add(writeWait))
-	return ws.WriteMessage(msg.Type, msg.Data)
+	c.ws.SetWriteDeadline(time.Now().Add(c.conf.WriteWait))
+	return c.ws.WriteMessage(msg.Type, msg.Data)
 }
 
 // Process incoming messages from the websocket connection and
 // send the result to a Middle hub for redirection.
-func (c *connection) readMessages(middlewareChan chan *Message) {
-	ws := c.Websocket
-
+func (c *connection) readMessages(middlewareChan chan<- *Message) {
+	ws := c.ws
 	pongHandler := func(string) error {
 		// FIXME: remove logging
 		log.Println("Connection", c.name, "received a pong message")
 		// Reset deadline.
-		ws.SetReadDeadline(time.Now().Add(pongWait))
+		ws.SetReadDeadline(time.Now().Add(c.conf.PongWait))
 		return nil
 	}
 
@@ -48,7 +37,7 @@ func (c *connection) readMessages(middlewareChan chan *Message) {
 		ws.Close()
 	}()
 
-	ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetReadDeadline(time.Now().Add(c.conf.PongWait))
 	ws.SetPongHandler(pongHandler)
 	for {
 		mt, raw, err := ws.ReadMessage()
@@ -56,11 +45,7 @@ func (c *connection) readMessages(middlewareChan chan *Message) {
 			break
 		}
 
-		msg, pass, err := c.Handler(&Message{mt, raw, c.name})
-
-		// Ensure the message origin is preserved so that writers of
-		// message handlers can ignore this parameter if they choose.
-		msg.Origin = c.name
+		msg, pass, err := c.h(&Message{mt, raw, c.name})
 
 		// Close the socket in case of an error.
 		if err != nil {
@@ -74,6 +59,9 @@ func (c *connection) readMessages(middlewareChan chan *Message) {
 			continue
 		}
 
+		// Ensure the message origin is preserved so that writers of
+		// message handlers can ignore this parameter if they choose.
+		msg.Origin = c.name
 		middlewareChan <- msg
 	}
 }
@@ -81,8 +69,8 @@ func (c *connection) readMessages(middlewareChan chan *Message) {
 // writeMessages pumps messages from the Middle hub to the  websocket.
 // It also keeps the underlying websocket connection alive by sending pings.
 func (c *connection) writeMessages() {
-	ws := c.Websocket
-	ticker := time.NewTicker(pingPeriod)
+	ws := c.ws
+	ticker := time.NewTicker(c.conf.PingPeriod)
 
 	defer func() {
 		ticker.Stop()
@@ -110,10 +98,12 @@ func (c *connection) writeMessages() {
 	}
 }
 
-func newConnection(ws *websocket.Conn, h MessageHandler) *connection {
+func newConnection(ws *websocket.Conn, h MessageHandler, name string, conf *Config) *connection {
 	return &connection{
-		Websocket: ws,
-		Handler:   h,
-		send:      make(chan *Message),
+		ws:   ws,
+		h:    h,
+		name: name,
+		send: make(chan *Message),
+		conf: conf,
 	}
 }
