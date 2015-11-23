@@ -7,6 +7,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	Server = "Server"
+	Client = "Client"
+)
+
 // Some internal constants taken from the Gorilla websocket chat example.
 const (
 	// Time allowed to write a message to the peer.
@@ -17,28 +22,28 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
-type message struct {
-	from        string
-	messageType int
-	payload     []byte
+type Message struct {
+	Type   int
+	Data   []byte
+	Origin string
 }
 
 type Conn struct {
 	Websocket *websocket.Conn
 	Handler   MessageHandler
 	name      string
-	send      chan message
+	send      chan *Message
 }
 
-func (c *Conn) write(messageType int, payload []byte) error {
+func (c *Conn) write(msg *Message) error {
 	ws := c.Websocket
 	ws.SetWriteDeadline(time.Now().Add(writeWait))
-	return ws.WriteMessage(messageType, payload)
+	return ws.WriteMessage(msg.Type, msg.Data)
 }
 
 // Process incoming messages from the websocket connection and
 // send the result to a Middleware hub for redirection.
-func (c *Conn) readMessages(middlewareChan chan message) {
+func (c *Conn) readMessages(middlewareChan chan *Message) {
 	ws := c.Websocket
 
 	pongHandler := func(string) error {
@@ -50,7 +55,7 @@ func (c *Conn) readMessages(middlewareChan chan message) {
 	}
 
 	defer func() {
-		close(c.send)
+		ws.WriteMessage(websocket.CloseMessage, []byte{})
 		ws.Close()
 	}()
 
@@ -62,17 +67,18 @@ func (c *Conn) readMessages(middlewareChan chan message) {
 			break
 		}
 
-		mt, pm, err := c.Handler(mt, raw)
+		msg, pass, err := c.Handler(&Message{mt, raw, c.name})
+
+		// Close the socket in case of an error.
 		if err != nil {
 			// FIXME: do what in case the handler errors?
 			log.Println("Handler error:", err)
-			continue
+			break
 		}
 
-		msg := message{
-			from:        c.name,
-			messageType: mt,
-			payload:     pm,
+		// Only pass messages the handler deems worthy.
+		if !pass {
+			continue
 		}
 
 		middlewareChan <- msg
@@ -92,18 +98,19 @@ func (c Conn) writeMessages() {
 
 	for {
 		select {
-		case m, ok := <-c.send:
+		case msg, ok := <-c.send:
 			if !ok {
 				ws.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			if err := c.write(m.messageType, m.payload); err != nil {
+			if err := c.write(msg); err != nil {
 				return
 			}
 
 		case <-ticker.C:
-			if err := c.write(websocket.PingMessage, []byte{}); err != nil {
+			control := &Message{websocket.PingMessage, nil, ""}
+			if err := c.write(control); err != nil {
 				return
 			}
 		}
@@ -114,6 +121,6 @@ func NewConn(ws *websocket.Conn, h MessageHandler) *Conn {
 	return &Conn{
 		Websocket: ws,
 		Handler:   h,
-		send:      make(chan message),
+		send:      make(chan *Message),
 	}
 }

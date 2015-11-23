@@ -8,20 +8,24 @@ import (
 )
 
 // MessageHandler funcs are responsible for processing websocket messages.
-type MessageHandler func(int, []byte) (int, []byte, error)
+// They should return a processed message, an indication of whether the
+// message should be forwarded, and a possible error.  When a Middleware
+// instance encounters a handler error, it will shut down the underlying
+// websocket.
+type MessageHandler func(*Message) (*Message, bool, error)
 
 // Middleware between a client and server that would normally connect via
 // a single websocket.
 type Middleware struct {
 	conns    map[string]*Conn
-	messages chan message
+	messages chan *Message
 }
 
-func (m Middleware) redirect(msg message) error {
+func (m Middleware) redirect(msg *Message) error {
 
-	dest := "server"
-	if msg.from == "server" {
-		dest = "client"
+	dest := Server
+	if msg.Origin == Server {
+		dest = Client
 	}
 
 	if c, ok := m.conns[dest]; ok {
@@ -68,28 +72,6 @@ func (m Middleware) Run() {
 func New(clientConn *Conn, serverConn *Conn) *Middleware {
 	return &Middleware{
 		conns:    map[string]*Conn{"client": clientConn, "server": serverConn},
-		messages: make(chan message),
+		messages: make(chan *Message),
 	}
 }
-
-// func (m Middleware) Start() {
-// 	go func() {
-// 		m.Conns.KeepAlive()
-// 	}()
-
-// 	// Handle messages from the client to the server.
-// 	go func() {
-// 		intercept(m.Conns.ClientConn, m.Conns.ServerConn, m.ClientHandler)
-// 	}()
-
-// 	// Handle messages from the server to the client.
-// 	go func() {
-// 		intercept(m.Conns.ServerConn, m.Conns.ClientConn, m.ServerHandler)
-// 	}()
-// }
-
-// // New Middleware instance with client message handler c and server
-// // message handler s.
-// func New(conns Conns, c MessageHandler, s MessageHandler) *Middleware {
-// 	return &Middleware{conns, c, s}
-// }
