@@ -79,7 +79,8 @@ func (m Middle) redirect(msg *Message) error {
 // Process a websocket connection. Handles reading and writing.
 func (m Middle) processConn(c *connection) {
 	go c.writeMessages()
-	c.readMessages(m.messages)
+	go c.processMessages(m.messages)
+	go c.readMessages()
 }
 
 func (m Middle) Shutdown() {
@@ -92,7 +93,7 @@ func (m Middle) Shutdown() {
 
 func (m Middle) Run() {
 	for _, conn := range m.conns {
-		go m.processConn(conn)
+		m.processConn(conn)
 	}
 
 	// Redirect messages sent from the websockets.
