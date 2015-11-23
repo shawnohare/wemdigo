@@ -7,11 +7,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	Server = "Server"
-	Client = "Client"
-)
-
 // Some internal constants taken from the Gorilla websocket chat example.
 const (
 	// Time allowed to write a message to the peer.
@@ -22,20 +17,14 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
-type Message struct {
-	Type   int
-	Data   []byte
-	Origin string
-}
-
-type Conn struct {
+type connection struct {
 	Websocket *websocket.Conn
 	Handler   MessageHandler
 	name      string
 	send      chan *Message
 }
 
-func (c *Conn) write(msg *Message) error {
+func (c *connection) write(msg *Message) error {
 	ws := c.Websocket
 	ws.SetWriteDeadline(time.Now().Add(writeWait))
 	return ws.WriteMessage(msg.Type, msg.Data)
@@ -43,7 +32,7 @@ func (c *Conn) write(msg *Message) error {
 
 // Process incoming messages from the websocket connection and
 // send the result to a Middle hub for redirection.
-func (c *Conn) readMessages(middlewareChan chan *Message) {
+func (c *connection) readMessages(middlewareChan chan *Message) {
 	ws := c.Websocket
 
 	pongHandler := func(string) error {
@@ -69,6 +58,10 @@ func (c *Conn) readMessages(middlewareChan chan *Message) {
 
 		msg, pass, err := c.Handler(&Message{mt, raw, c.name})
 
+		// Ensure the message origin is preserved so that writers of
+		// message handlers can ignore this parameter if they choose.
+		msg.Origin = c.name
+
 		// Close the socket in case of an error.
 		if err != nil {
 			// FIXME: do what in case the handler errors?
@@ -87,7 +80,7 @@ func (c *Conn) readMessages(middlewareChan chan *Message) {
 
 // writeMessages pumps messages from the Middle hub to the  websocket.
 // It also keeps the underlying websocket connection alive by sending pings.
-func (c Conn) writeMessages() {
+func (c *connection) writeMessages() {
 	ws := c.Websocket
 	ticker := time.NewTicker(pingPeriod)
 
@@ -117,8 +110,8 @@ func (c Conn) writeMessages() {
 	}
 }
 
-func NewConn(ws *websocket.Conn, h MessageHandler) *Conn {
-	return &Conn{
+func newConnection(ws *websocket.Conn, h MessageHandler) *connection {
+	return &connection{
 		Websocket: ws,
 		Handler:   h,
 		send:      make(chan *Message),

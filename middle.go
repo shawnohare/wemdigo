@@ -5,7 +5,27 @@ package wemdigo
 import (
 	"errors"
 	"log"
+
+	"github.com/gorilla/websocket"
 )
+
+// Origin constants.
+const (
+	Server = "Server"
+	Client = "Client"
+)
+
+// Message sent between a client and server over a websocket.  The
+// Type and Data fields are the same as returned by the
+// Gorilla websocket package.  The Origin indicates whether the
+// message arrived from the client or server, and can safely be
+// ignored by users unless they wish to write a single message handler
+// and need to split logic based on origin.
+type Message struct {
+	Type   int
+	Data   []byte
+	Origin string
+}
 
 // MessageHandler funcs are responsible for processing websocket messages.
 // They should return a processed message, an indication of whether the
@@ -14,10 +34,18 @@ import (
 // websocket.
 type MessageHandler func(*Message) (*Message, bool, error)
 
+// Config parameters used to create a new Middle instance.
+type Config struct {
+	ClientWebsocket *websocket.Conn
+	ClientHandler   MessageHandler
+	ServerWebsocket *websocket.Conn
+	ServerHandler   MessageHandler
+}
+
 // Middle between a client and server that would normally connect via
 // a single websocket.
 type Middle struct {
-	conns    map[string]*Conn
+	conns    map[string]*connection
 	messages chan *Message
 }
 
@@ -40,8 +68,8 @@ func (m Middle) redirect(msg *Message) error {
 	return errors.New("Could not redirect message.")
 }
 
-// Process a websocket connection.
-func (m Middle) processConn(c *Conn) {
+// Process a websocket connection. Handles reading and writing.
+func (m Middle) processConn(c *connection) {
 	go c.writeMessages()
 	c.readMessages(m.messages)
 }
@@ -69,9 +97,12 @@ func (m Middle) Run() {
 	}
 }
 
-func New(clientConn *Conn, serverConn *Conn) *Middle {
+func New(conf *Config) *Middle {
 	return &Middle{
-		conns:    map[string]*Conn{"client": clientConn, "server": serverConn},
+		conns: map[string]*connection{
+			Client: newConnection(conf.ClientWebsocket, conf.ClientHandler),
+			Server: newConnection(conf.ServerWebsocket, conf.ServerHandler),
+		},
 		messages: make(chan *Message),
 	}
 }
