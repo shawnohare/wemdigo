@@ -4,7 +4,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/websocket"
 )
 
@@ -28,8 +27,8 @@ func (c *connection) write(msg *Message) error {
 func (c *connection) processMessages(out chan<- *Message) {
 	defer c.ws.Close()
 	for msg := range c.proc {
-		log.Println("received message on proc chan")
-		spew.Dump(msg)
+		// log.Println("received message on proc chan")
+		// spew.Dump(msg)
 		pmsg, pass, err := c.h(msg)
 
 		// Close the socket in case of an error.

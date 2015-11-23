@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/websocket"
 )
 
@@ -98,6 +97,7 @@ func (m Middle) Run() {
 
 	// Redirect messages sent from the websockets.
 	// FIXME seems equivalent to a range over the message channel.
+	// defer m.Shutdown()
 	// for {
 	// 	select {
 	// 	case msg, ok := <-m.messages:
@@ -106,14 +106,13 @@ func (m Middle) Run() {
 	// 		}
 	// 		err := m.redirect(msg)
 	// 		if err != nil {
-	// 			m.Shutdown()
 	// 		}
 	// 	}
 	// }
 
 	defer m.Shutdown()
 	for msg := range m.messages {
-		spew.Dump("redirecting message in middle:", msg)
+		// spew.Dump("redirecting message in middle:", msg)
 		err := m.redirect(msg)
 		if err != nil {
 			log.Println(err)
