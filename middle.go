@@ -13,10 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Origin constants.
+// Origin & peer constants.
 const (
-	Server = "Server"
-	Client = "Client"
+	internalOrigin       = 0
+	Server         uint8 = 1
+	Client         uint8 = 2
 )
 
 // Message sent between a client and server over a websocket.  The
@@ -28,7 +29,7 @@ const (
 type Message struct {
 	Type   int
 	Data   []byte
-	Origin string
+	Origin uint8
 }
 
 // MessageHandler funcs are responsible for processing websocket messages.
@@ -79,7 +80,7 @@ func (conf *Config) init() {
 // Middle between a client and server that would normally connect via
 // a single websocket.
 type Middle struct {
-	conns    map[string]*connection
+	conns    map[uint8]*connection
 	messages chan *Message
 }
 
@@ -151,7 +152,7 @@ func New(conf *Config) *Middle {
 	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, conf)
 
 	return &Middle{
-		conns: map[string]*connection{
+		conns: map[uint8]*connection{
 			Client: c,
 			Server: s,
 		},

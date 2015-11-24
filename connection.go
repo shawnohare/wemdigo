@@ -10,7 +10,7 @@ import (
 type connection struct {
 	ws   *websocket.Conn
 	h    MessageHandler
-	name string
+	peer uint8
 	send chan *Message // Channel to of messages to write.
 	proc chan *Message // Channel to process messages with the handler.
 	conf *Config       // Middleware conf so we may access keep alive times.
@@ -33,7 +33,7 @@ func (c *connection) processMessages(out chan<- *Message) {
 
 		// Close the socket in case of an error.
 		if err != nil {
-			control := &Message{websocket.CloseMessage, nil, c.name}
+			control := &Message{websocket.CloseMessage, nil, c.peer}
 			c.send <- control
 			log.Println("Handler error:", err)
 			return
@@ -46,7 +46,7 @@ func (c *connection) processMessages(out chan<- *Message) {
 
 		// Ensure the message origin is preserved so that writers of
 		// message handlers can ignore this parameter if they choose.
-		pmsg.Origin = c.name
+		pmsg.Origin = c.peer
 		out <- pmsg
 	}
 }
@@ -73,12 +73,12 @@ func (c *connection) readMessages() {
 	for {
 		mt, raw, err := ws.ReadMessage()
 		if err != nil {
-			control := &Message{websocket.CloseMessage, nil, c.name}
+			control := &Message{websocket.CloseMessage, nil, c.peer}
 			c.send <- control
 			break
 		}
 
-		c.proc <- &Message{mt, raw, c.name}
+		c.proc <- &Message{mt, raw, c.peer}
 	}
 }
 
@@ -106,7 +106,7 @@ func (c *connection) writeMessages() {
 			}
 		case <-ticker.C:
 			// log.Println(c.name, "sending a ping.")
-			control := &Message{websocket.PingMessage, nil, ""}
+			control := &Message{websocket.PingMessage, nil, internalOrigin}
 			if err := c.write(control); err != nil {
 				return
 			}
@@ -114,11 +114,11 @@ func (c *connection) writeMessages() {
 	}
 }
 
-func newConnection(ws *websocket.Conn, h MessageHandler, name string, conf *Config) *connection {
+func newConnection(ws *websocket.Conn, h MessageHandler, peer uint8, conf *Config) *connection {
 	return &connection{
 		ws:   ws,
 		h:    h,
-		name: name,
+		peer: peer,
 		send: make(chan *Message),
 		proc: make(chan *Message),
 		conf: conf,
