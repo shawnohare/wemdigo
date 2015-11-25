@@ -21,7 +21,8 @@ const (
 )
 
 const (
-	controlClose int = -1
+	controlClose     int = -1
+	controlKillConns     = -2
 )
 
 // Message sent between a client and server over a websocket.  The
@@ -84,12 +85,12 @@ func (conf *Config) init() {
 // Middle between a client and server that would normally connect via
 // a single websocket.
 type Middle struct {
-	conns map[uint8]*connection
+	conns    map[uint8]*connection
+	killPool map[*connection]struct{}
 	// comm is a channel over which the websockets can communicate
 	comm chan *Message
-	// done is a channel that
-	// FIXME can probably get rid of the done channel and only use the comm
-	done chan bool
+	// kill allows connections to signify they are ready to be closed.
+	kill chan *connection
 }
 
 func (m Middle) redirect(msg *Message) error {
@@ -107,42 +108,132 @@ func (m Middle) redirect(msg *Message) error {
 	return errors.New("Could not redirect message.")
 }
 
-// FIXME
 // Shutdown sends a close control message to each connection so that it can
 // finish the current processing & writing and begin to close.
 func (m Middle) Shutdown() {
+	// FIXME:
+	log.Println("In Middle shutdown.")
 	for _, conn := range m.conns {
 		control := &Message{controlClose, nil, internal}
 		conn.read <- control
 	}
-	// FIXME do we need to close these channels?
-	// close(m.comm)
-	// close(m.done)
+
+	// Wait for all connections to signify that they are ready to kill.
+	// Then, commence cleanup operations.
+	log.Println("Beginning to range over kill chan")
+	for conn := range m.kill {
+		log.Println("Adding conn", conn.peer, "to kill pool.")
+		m.killPool[conn] = struct{}{}
+		if len(m.killPool) != len(m.conns) {
+			continue
+		} else {
+			break
+		}
+	}
+
+	// All the connections in m.conns have been added to the kill pool now.
+	// We can go ahead and safely close things.
+	log.Println("Closing connections.")
+	for conn := range m.killPool {
+		conn.close()
+	}
+
+	close(m.comm)
+	close(m.kill)
+	log.Println("Finished shutdown.")
 }
 
 func (m Middle) Run() {
-	defer m.Shutdown()
+	// FIXME
+	log.Println("Running middle.")
+	// defer m.Shutdown()
 	for _, conn := range m.conns {
 		conn.run()
 	}
 
-	for {
-		select {
-		case msg, ok := <-m.comm:
-			if !ok {
+	// for msg := range m.comm {
+	// 	log.Println("Middle received message from", msg.Origin, "of type", msg.Type)
+	// 	if msg == nil || msg.Type == controlKillConns {
+	// 		return
+	// 	}
+	// 	err := m.redirect(msg)
+	// 	if err != nil {
+	// 		log.Println(err)
+	// 		return
+	// 	}
+	// }
+
+	// FIXME an attempt to signal stopping via a stop chan
+	stop := make(chan bool)
+	go func() {
+		for msg := range m.comm {
+			log.Println("Middle received message from", msg.Origin, "of type", msg.Type)
+
+			if msg == nil || msg.Type == controlKillConns {
+				stop <- true
 				return
 			}
+
 			err := m.redirect(msg)
 			if err != nil {
-				log.Println(err)
-				return
-			}
-		case shutdown, ok := <-m.done:
-			if !ok || shutdown {
+				log.Println("redir error", err)
+				stop <- true
 				return
 			}
 		}
-	}
+	}()
+
+	<-stop
+	m.Shutdown()
+
+	// FIXME: didn't seem to help
+	// go func() {
+	// 	for msg := range m.comm {
+	// 		spew.Dump("Middle received message: %s", msg)
+	// 		err := m.redirect(msg)
+	// 		if err != nil {
+	// 			log.Println(err)
+	// 			break
+	// 		}
+	// 	}
+
+	// 	// FIXME: never executed it seems.
+	// 	// Send termination signal.
+	// 	log.Println("Middle sending it's own done message.")
+	// 	m.done <- true
+	// 	close(m.done)
+	// }()
+
+	// FIXME: this seems to never be entered.  Does it need to be closed?
+	// for shutdown := range m.done {
+	// 	if shutdown {
+	// 		log.Println("Middle received shutdown message.")
+	// 		break
+	// 	}
+	// }
+
+	// FIXME original middle loop that seemed to never receive things on the done chan.
+	// for {
+	// 	select {
+	// 	case msg, ok := <-m.comm:
+	// 		// FIXME
+	// 		spew.Dump("Middle received message: %s", msg)
+	// 		if !ok {
+	// 			return
+	// 		}
+	// 		err := m.redirect(msg)
+	// 		if err != nil {
+	// 			log.Println(err)
+	// 			return
+	// 		}
+	// 	case shutdown, ok := <-m.done:
+	// 		// FIXME
+	// 		log.Println("Middle received shutdown message.")
+	// 		if !ok || shutdown {
+	// 			return
+	// 		}
+	// 	}
+	// }
 
 	// FIXME old code without shutdown channel
 	// defer m.Shutdown()
@@ -165,10 +256,12 @@ func New(conf *Config) *Middle {
 
 	// Create the various Middle to connection communication channels.
 	comm := make(chan *Message)
+	kill := make(chan *connection)
 
 	// Expose certain aspects of the Middle layer to its connections.
 	cc := &connectionConfig{
 		comm:       comm,
+		kill:       kill,
 		writeWait:  conf.WriteWait,
 		pingPeriod: conf.PingPeriod,
 		pongWait:   conf.PongWait,
@@ -177,12 +270,16 @@ func New(conf *Config) *Middle {
 	// Create the client and server connection.
 	c := newConnection(conf.ClientWebsocket, conf.ClientHandler, Client, cc)
 	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, cc)
+	conns := map[uint8]*connection{
+		Client: c,
+		Server: s,
+	}
 
 	return &Middle{
-		conns: map[uint8]*connection{
-			Client: c,
-			Server: s,
-		},
-		comm: comm,
+		conns: conns,
+		comm:  comm,
+		kill:  kill,
+		// FIXME can get rid of stop?
+		killPool: make(map[*connection]struct{}, len(conns)),
 	}
 }
