@@ -15,9 +15,13 @@ import (
 
 // Origin & peer constants.
 const (
-	internalOrigin       = 0
-	Server         uint8 = 1
-	Client         uint8 = 2
+	internal       = 0
+	Server   uint8 = 1
+	Client   uint8 = 2
+)
+
+const (
+	controlClose int = -1
 )
 
 // Message sent between a client and server over a websocket.  The
@@ -80,8 +84,12 @@ func (conf *Config) init() {
 // Middle between a client and server that would normally connect via
 // a single websocket.
 type Middle struct {
-	conns    map[uint8]*connection
-	messages chan *Message
+	conns map[uint8]*connection
+	// comm is a channel over which the websockets can communicate
+	comm chan *Message
+	// done is a channel that
+	// FIXME can probably get rid of the done channel and only use the comm
+	done chan bool
 }
 
 func (m Middle) redirect(msg *Message) error {
@@ -99,63 +107,82 @@ func (m Middle) redirect(msg *Message) error {
 	return errors.New("Could not redirect message.")
 }
 
-// Process a websocket connection. Handles reading and writing.
-func (m Middle) processConn(c *connection) {
-	go c.writeMessages()
-	go c.processMessages(m.messages)
-	go c.readMessages()
-}
-
+// FIXME
+// Shutdown sends a close control message to each connection so that it can
+// finish the current processing & writing and begin to close.
 func (m Middle) Shutdown() {
 	for _, conn := range m.conns {
-		conn.ws.Close()
-		close(conn.send)
+		control := &Message{controlClose, nil, internal}
+		conn.read <- control
 	}
-	close(m.messages)
+	// FIXME do we need to close these channels?
+	// close(m.comm)
+	// close(m.done)
 }
 
 func (m Middle) Run() {
+	defer m.Shutdown()
 	for _, conn := range m.conns {
-		m.processConn(conn)
+		conn.run()
 	}
 
-	// Redirect messages sent from the websockets.
-	// FIXME seems equivalent to a range over the message channel.
-	// defer m.Shutdown()
-	// for {
-	// 	select {
-	// 	case msg, ok := <-m.messages:
-	// 		if !ok {
-	// 			m.Shutdown()
-	// 		}
-	// 		err := m.redirect(msg)
-	// 		if err != nil {
-	// 		}
-	// 	}
-	// }
-
-	defer m.Shutdown()
-	for msg := range m.messages {
-		// spew.Dump("redirecting message in middle:", msg)
-		err := m.redirect(msg)
-		if err != nil {
-			log.Println(err)
-			return
+	for {
+		select {
+		case msg, ok := <-m.comm:
+			if !ok {
+				return
+			}
+			err := m.redirect(msg)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+		case shutdown, ok := <-m.done:
+			if !ok || shutdown {
+				return
+			}
 		}
 	}
+
+	// FIXME old code without shutdown channel
+	// defer m.Shutdown()
+	// for msg := range m.comm {
+	// 	// spew.Dump("redirecting message in middle:", msg)
+	// 	if msg == nil || msg.Type == controlClose {
+	// 		return
+	// 	}
+
+	// 	err := m.redirect(msg)
+	// 	if err != nil {
+	// 		log.Println(err)
+	// 		return
+	// 	}
+	// }
 }
 
 func New(conf *Config) *Middle {
 	conf.init()
 
-	c := newConnection(conf.ClientWebsocket, conf.ClientHandler, Client, conf)
-	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, conf)
+	// Create the various Middle to connection communication channels.
+	comm := make(chan *Message)
+
+	// Expose certain aspects of the Middle layer to its connections.
+	cc := &connectionConfig{
+		comm:       comm,
+		writeWait:  conf.WriteWait,
+		pingPeriod: conf.PingPeriod,
+		pongWait:   conf.PongWait,
+	}
+
+	// Create the client and server connection.
+	c := newConnection(conf.ClientWebsocket, conf.ClientHandler, Client, cc)
+	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, cc)
 
 	return &Middle{
 		conns: map[uint8]*connection{
 			Client: c,
 			Server: s,
 		},
-		messages: make(chan *Message),
+		comm: comm,
 	}
 }
