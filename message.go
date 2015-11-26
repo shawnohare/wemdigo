@@ -23,10 +23,11 @@ type Message struct {
 	Control int
 }
 
-// MessageHandler funcs are responsible for processing websocket messages.
+// MessageHandler funcs map raw WebSocket messages bound in a Message
+// instance to an honest Message instance.
+//
+// They are responsible for processing websocket messages.
 // They should return a processed message, an indication of whether the
 // message should be forwarded, and a possible error.  An error will
 // cause the Middle layer to commence shutdown operations.
-//
-//
 type MessageHandler func(*Message) (*Message, bool, error)
