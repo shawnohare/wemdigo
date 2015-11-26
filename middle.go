@@ -1,59 +1,23 @@
-// Package wemdigo provides structs that allows for bidirectional middle
-// processing of websocket communications between a client and server.
-// The wemdigo Middle layer expects that all peers can respond to control
-// messages.  In particular, a Middle instance expects regular pong
-// responses after it sends a ping.
+// Package wemdigo provides a Middle struct that allows for
+// multiple websockets to communicate with each other while a middle layer
+// adds interception processing.  Moreover, the Middle layer handles
+// ping & pong communications.
 package wemdigo
 
 import (
-	"errors"
 	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// Origin & peer constants.
-const (
-	internal       = 0
-	Server   uint8 = 1
-	Client   uint8 = 2
-)
-
-const (
-	controlClose     int = -1
-	controlKillConns     = -2
-)
-
-// Message sent between a client and server over a websocket.  The
-// Type and Data fields are the same as returned by the
-// Gorilla websocket package.  The Origin indicates whether the
-// message arrived from the client or server, and can safely be
-// ignored by users unless they wish to write a single message handler
-// and need to split logic based on origin.
-type Message struct {
-	Type   int
-	Data   []byte
-	Origin uint8
-}
-
-// MessageHandler funcs are responsible for processing websocket messages.
-// They should return a processed message, an indication of whether the
-// message should be forwarded, and a possible error.  When a Middle
-// instance encounters a handler error, it will shut down the underlying
-// websocket.
-type MessageHandler func(*Message) (*Message, bool, error)
-
 // Config parameters used to create a new Middle instance.
 type Config struct {
 	// Required params.
-	ClientWebsocket *websocket.Conn
-	ClientHandler   MessageHandler
-	ServerWebsocket *websocket.Conn
-	ServerHandler   MessageHandler
+	Conns   map[string]*websocket.Conn
+	Handler MessageHandler
 
 	// Optional params.
-
 	// PingPeriod specifies how often to ping the peer.  It determines
 	// a slightly longer pong wait time.
 	PingPeriod time.Duration
@@ -69,10 +33,20 @@ type Config struct {
 	WriteWait time.Duration
 }
 
+// Middle between a collection of websockets.
+type Middle struct {
+	conns      map[string]*connection
+	handler    MessageHandler
+	raw        chan *RawMessage
+	message    chan *Message
+	errors     chan error
+	unregister chan *connection
+}
+
 func (conf *Config) init() {
 	// Process the config
 	if conf.PingPeriod == 0 {
-		conf.PingPeriod = 60 * time.Second
+		conf.PingPeriod = 20 * time.Second
 	}
 	if conf.WriteWait == 0 {
 		conf.WriteWait = 10 * time.Second
@@ -82,204 +56,125 @@ func (conf *Config) init() {
 	}
 }
 
-// Middle between a client and server that would normally connect via
-// a single websocket.
-type Middle struct {
-	conns    map[uint8]*connection
-	killPool map[*connection]struct{}
-	// comm is a channel over which the websockets can communicate
-	comm chan *Message
-	// kill allows connections to signify they are ready to be closed.
-	kill chan *connection
+// handlerLoop watches for raw messages sent from the Middle's connections
+// and applies the message handler to each message in a separate goroutine.
+// The results, and any potential errors, and sent back to the Middle through
+// the appropriate channels.
+func (m Middle) handlerLoop() {
+	defer func() {
+		close(m.message)
+		close(m.errors)
+	}()
+
+	for msg := range m.raw {
+		go func(msg *RawMessage) {
+			pmsg, ok, err := m.handler(msg)
+			if err != nil {
+				m.errors <- err
+				return
+			}
+
+			if ok {
+				m.message <- pmsg
+			}
+		}(msg)
+	}
 }
 
-func (m Middle) redirect(msg *Message) error {
-
-	dest := Server
-	if msg.Origin == Server {
-		dest = Client
+// Delete a connection from the Middle connections map.
+func (m *Middle) delete(c *connection) {
+	if _, ok := m.conns[c.id]; ok {
+		close(c.send)
+		delete(m.conns, c.id)
 	}
-
-	if c, ok := m.conns[dest]; ok {
-		c.send <- msg
-		return nil
-	}
-
-	return errors.New("Could not redirect message.")
 }
 
-// Shutdown sends a close control message to each connection so that it can
-// finish the current processing & writing and begin to close.
-func (m Middle) Shutdown() {
-	// FIXME:
-	log.Println("In Middle shutdown.")
-	for _, conn := range m.conns {
-		control := &Message{controlClose, nil, internal}
-		conn.read <- control
-	}
-
-	// Wait for all connections to signify that they are ready to kill.
-	// Then, commence cleanup operations.
-	log.Println("Beginning to range over kill chan")
-	for conn := range m.kill {
-		log.Println("Adding conn", conn.peer, "to kill pool.")
-		m.killPool[conn] = struct{}{}
-		if len(m.killPool) != len(m.conns) {
-			continue
-		} else {
-			break
+// send a the message to the connection with the specified id.
+func (m *Middle) send(msg *Message, id string) {
+	if c, ok := m.conns[id]; ok {
+		select {
+		case c.send <- msg:
+		default:
+			m.delete(c)
 		}
+	} else {
+		log.Println("Connection with id", id, "does not exist.")
 	}
-
-	// All the connections in m.conns have been added to the kill pool now.
-	// We can go ahead and safely close things.
-	log.Println("Closing connections.")
-	for conn := range m.killPool {
-		conn.close()
-	}
-
-	close(m.comm)
-	close(m.kill)
-	log.Println("Finished shutdown.")
 }
 
 func (m Middle) Run() {
-	// FIXME
+	defer func() {
+		close(m.unregister)
+		close(m.raw)
+	}()
+
 	log.Println("Running middle.")
-	// defer m.Shutdown()
 	for _, conn := range m.conns {
 		conn.run()
 	}
 
-	// for msg := range m.comm {
-	// 	log.Println("Middle received message from", msg.Origin, "of type", msg.Type)
-	// 	if msg == nil || msg.Type == controlKillConns {
-	// 		return
-	// 	}
-	// 	err := m.redirect(msg)
-	// 	if err != nil {
-	// 		log.Println(err)
-	// 		return
-	// 	}
-	// }
+	// Apply the message handler to incoming messages.
+	go m.handlerLoop()
 
-	// FIXME an attempt to signal stopping via a stop chan
-	stop := make(chan bool)
-	go func() {
-		for msg := range m.comm {
-			log.Println("Middle received message from", msg.Origin, "of type", msg.Type)
-
-			if msg == nil || msg.Type == controlKillConns {
-				stop <- true
-				return
-			}
-
-			err := m.redirect(msg)
-			if err != nil {
-				log.Println("redir error", err)
-				stop <- true
-				return
-			}
+	// Main event loop.
+	for {
+		// If at any point a Middle instance has no connections, begin shutdown.
+		if len(m.conns) == 0 {
+			break
 		}
-	}()
 
-	<-stop
-	m.Shutdown()
+		select {
 
-	// FIXME: didn't seem to help
-	// go func() {
-	// 	for msg := range m.comm {
-	// 		spew.Dump("Middle received message: %s", msg)
-	// 		err := m.redirect(msg)
-	// 		if err != nil {
-	// 			log.Println(err)
-	// 			break
-	// 		}
-	// 	}
+		case msg := <-m.message:
+			// Broadcast the processed message to destinations.
+			for _, id := range msg.Destinations {
+				m.send(msg, id)
+			}
 
-	// 	// FIXME: never executed it seems.
-	// 	// Send termination signal.
-	// 	log.Println("Middle sending it's own done message.")
-	// 	m.done <- true
-	// 	close(m.done)
-	// }()
+		case err := <-m.errors:
+			if err != nil {
+				log.Println("Message handler error:", err)
+				// Send a kill message to all connections.
+				for id := range m.conns {
+					control := &Message{Control: Kill}
+					m.send(control, id)
+				}
+			}
 
-	// FIXME: this seems to never be entered.  Does it need to be closed?
-	// for shutdown := range m.done {
-	// 	if shutdown {
-	// 		log.Println("Middle received shutdown message.")
-	// 		break
-	// 	}
-	// }
+		case c := <-m.unregister:
+			m.delete(c)
+		}
+	}
 
-	// FIXME original middle loop that seemed to never receive things on the done chan.
-	// for {
-	// 	select {
-	// 	case msg, ok := <-m.comm:
-	// 		// FIXME
-	// 		spew.Dump("Middle received message: %s", msg)
-	// 		if !ok {
-	// 			return
-	// 		}
-	// 		err := m.redirect(msg)
-	// 		if err != nil {
-	// 			log.Println(err)
-	// 			return
-	// 		}
-	// 	case shutdown, ok := <-m.done:
-	// 		// FIXME
-	// 		log.Println("Middle received shutdown message.")
-	// 		if !ok || shutdown {
-	// 			return
-	// 		}
-	// 	}
-	// }
-
-	// FIXME old code without shutdown channel
-	// defer m.Shutdown()
-	// for msg := range m.comm {
-	// 	// spew.Dump("redirecting message in middle:", msg)
-	// 	if msg == nil || msg.Type == controlClose {
-	// 		return
-	// 	}
-
-	// 	err := m.redirect(msg)
-	// 	if err != nil {
-	// 		log.Println(err)
-	// 		return
-	// 	}
-	// }
 }
 
 func New(conf *Config) *Middle {
-	conf.init()
 
-	// Create the various Middle to connection communication channels.
-	comm := make(chan *Message)
-	kill := make(chan *connection)
+	unregister := make(chan *connection)
 
 	// Expose certain aspects of the Middle layer to its connections.
+	conf.init()
 	cc := &connectionConfig{
-		comm:       comm,
-		kill:       kill,
+		unregister: unregister,
 		writeWait:  conf.WriteWait,
 		pingPeriod: conf.PingPeriod,
 		pongWait:   conf.PongWait,
 	}
 
-	// Create the client and server connection.
-	c := newConnection(conf.ClientWebsocket, conf.ClientHandler, Client, cc)
-	s := newConnection(conf.ServerWebsocket, conf.ServerHandler, Server, cc)
-	conns := map[uint8]*connection{
-		Client: c,
-		Server: s,
+	// Create new connections from the underlying websockets.
+	conns := make(map[string]*connection, len(conf.Conns))
+	for peer, ws := range conf.Conns {
+		conn := newConnection(ws, peer, cc)
+		conns[peer] = conn
 	}
 
-	return &Middle{
-		conns: conns,
-		comm:  comm,
-		kill:  kill,
-		// FIXME can get rid of stop?
-		killPool: make(map[*connection]struct{}, len(conns)),
+	m := &Middle{
+		conns:      conns,
+		handler:    conf.Handler,
+		unregister: unregister,
+		raw:        make(chan *RawMessage),
+		message:    make(chan *Message),
+		errors:     make(chan error),
 	}
+	return m
 }
