@@ -31,12 +31,16 @@ type Config struct {
 	// WriteWait is the time allowed to write a message to the peer.
 	// This does not usually need to be set by the user.
 	WriteWait time.Duration
+
+	// ReadLimit, if provided, will set an upper bound on message size.
+	// This value is the same as in the Gorilla websocket package.
+	ReadLimit int64
 }
 
 // Middle between a collection of websockets.
 type Middle struct {
 	conns      map[string]*connection
-	handler    MessageHandler
+	conf       *Config
 	raw        chan *Message
 	message    chan *Message
 	errors     chan error
@@ -67,8 +71,10 @@ func (m Middle) handlerLoop() {
 	}()
 
 	for msg := range m.raw {
+		// FIXME
+		log.Println("Middle handle loop received a message.")
 		go func(msg *Message) {
-			pmsg, ok, err := m.handler(msg)
+			pmsg, ok, err := m.conf.Handler(msg)
 			if err != nil {
 				m.errors <- err
 				return
@@ -78,6 +84,35 @@ func (m Middle) handlerLoop() {
 				m.message <- pmsg
 			}
 		}(msg)
+	}
+}
+
+// add the Gorilla websocket connection to the Middle instance.
+// func (m *Middle) Add(ws *websocket.Conn, id string) {
+// 	m.register <-
+// }
+func (m *Middle) add(ws *websocket.Conn, id string) {
+	c := &connection{
+		ws:   ws,
+		id:   id,
+		send: make(chan *Message),
+		mid:  m,
+	}
+
+	if m.conf.ReadLimit != 0 {
+		c.ws.SetReadLimit(m.conf.ReadLimit)
+	}
+
+	m.conns[id] = c
+}
+
+// Remove the websocket connection with the given id from the middle layer
+// and close the underlying websocket connection.
+func (m *Middle) remove(id string) {
+	if c, ok := m.conns[id]; ok {
+		m.unregister <- c
+	} else {
+		log.Println("Connection with id =", id, "does not exist.")
 	}
 }
 
@@ -118,6 +153,7 @@ func (m Middle) Run() {
 
 	// Main event loop.
 	for {
+		log.Println("In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
 		if len(m.conns) == 0 {
 			break
@@ -148,33 +184,24 @@ func (m Middle) Run() {
 
 }
 
-func New(conf *Config) *Middle {
-
-	unregister := make(chan *connection)
-
+func New(conf Config) *Middle {
 	// Expose certain aspects of the Middle layer to its connections.
 	conf.init()
-	cc := &connectionConfig{
-		unregister: unregister,
-		writeWait:  conf.WriteWait,
-		pingPeriod: conf.PingPeriod,
-		pongWait:   conf.PongWait,
-	}
-
-	// Create new connections from the underlying websockets.
-	conns := make(map[string]*connection, len(conf.Conns))
-	for peer, ws := range conf.Conns {
-		conn := newConnection(ws, peer, cc)
-		conns[peer] = conn
-	}
 
 	m := &Middle{
-		conns:      conns,
-		handler:    conf.Handler,
-		unregister: unregister,
+		conns:      make(map[string]*connection, len(conf.Conns)),
+		conf:       &conf,
+		unregister: make(chan *connection),
 		raw:        make(chan *Message),
 		message:    make(chan *Message),
 		errors:     make(chan error),
 	}
+
+	// Create new connections from the underlying websockets.
+	for id, ws := range conf.Conns {
+		m.add(ws, id)
+	}
+	conf.Conns = nil
+
 	return m
 }
