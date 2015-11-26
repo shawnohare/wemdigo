@@ -37,7 +37,7 @@ type Config struct {
 type Middle struct {
 	conns      map[string]*connection
 	handler    MessageHandler
-	raw        chan *RawMessage
+	raw        chan *Message
 	message    chan *Message
 	errors     chan error
 	unregister chan *connection
@@ -67,7 +67,7 @@ func (m Middle) handlerLoop() {
 	}()
 
 	for msg := range m.raw {
-		go func(msg *RawMessage) {
+		go func(msg *Message) {
 			pmsg, ok, err := m.handler(msg)
 			if err != nil {
 				m.errors <- err
@@ -172,7 +172,7 @@ func New(conf *Config) *Middle {
 		conns:      conns,
 		handler:    conf.Handler,
 		unregister: unregister,
-		raw:        make(chan *RawMessage),
+		raw:        make(chan *Message),
 		message:    make(chan *Message),
 		errors:     make(chan error),
 	}

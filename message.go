@@ -5,7 +5,9 @@ const (
 	Kill int = -1
 )
 
-type RawMessage struct {
+// Message from a websocket intended to be processed and sent to other
+// websockets.
+type Message struct {
 	// Type is any valid value from the Gorilla websocket package.
 	Type int
 	// Data is the raw data as received from the websocket connection.
@@ -14,12 +16,6 @@ type RawMessage struct {
 	// set by users when creating message handlers.  The Middle hub will
 	// track the origin.
 	Origin string
-}
-
-// Message from a websocket intended to be processed and sent to other
-// websockets.
-type Message struct {
-	*RawMessage
 	// Destinations indicates the intended target websockets.
 	Destinations []string
 	// Control messages override some standard behavior. This is value
@@ -33,4 +29,4 @@ type Message struct {
 // cause the Middle layer to commence shutdown operations.
 //
 //
-type MessageHandler func(*RawMessage) (*Message, bool, error)
+type MessageHandler func(*Message) (*Message, bool, error)

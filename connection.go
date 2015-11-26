@@ -12,7 +12,7 @@ import (
 // Middle layer.
 type connectionConfig struct {
 	unregister chan *connection // To notify the middle the connection is done.
-	raw        chan *RawMessage
+	raw        chan *Message
 	pingPeriod time.Duration
 	pongWait   time.Duration
 	writeWait  time.Duration
@@ -46,7 +46,7 @@ func (c *connection) readPump() {
 		if err != nil {
 			return
 		}
-		message := &RawMessage{Type: mt, Data: data, Origin: c.id}
+		message := &Message{Type: mt, Data: data, Origin: c.id}
 		c.mid.raw <- message
 	}
 }
