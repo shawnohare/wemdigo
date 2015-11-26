@@ -22,8 +22,8 @@ func (c *connection) setReadDeadline() {
 	c.ws.SetReadDeadline(t)
 }
 
-// readPump pumps messages from the websocket connection to the Middle.
-func (c *connection) readPump() {
+// readLoop pumps messages from the websocket connection to the Middle.
+func (c *connection) readLoop() {
 	defer func() {
 		c.mid.unregister <- c
 		c.ws.Close()
@@ -53,8 +53,8 @@ func (c *connection) write(messageType int, data []byte) error {
 	return c.ws.WriteMessage(messageType, data)
 }
 
-// writePump pumps messages from the Middle to the websocket connection.
-func (c *connection) writePump() {
+// writeLoop pumps messages from the Middle to the websocket connection.
+func (c *connection) writeLoop() {
 	ticker := time.NewTicker(c.mid.conf.PingPeriod)
 	defer func() {
 		ticker.Stop()
@@ -68,12 +68,13 @@ func (c *connection) writePump() {
 				return
 			}
 
-			// Handle regular messages control messages.
+			// Deal with possible control messages.
 			switch message.Control {
 			case Kill:
 				c.write(websocket.CloseMessage, nil)
 				return
 			default:
+				// No Control value set, so no special processing required.
 				if err := c.write(message.Type, message.Data); err != nil {
 					return
 				}
@@ -88,6 +89,6 @@ func (c *connection) writePump() {
 }
 
 func (c *connection) run() {
-	go c.writePump()
-	go c.readPump()
+	go c.writeLoop()
+	go c.readLoop()
 }
