@@ -7,14 +7,12 @@ package wemdigo
 import (
 	"log"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // Config parameters used to create a new Middle instance.
 type Config struct {
 	// Required params.
-	Conns   map[string]*websocket.Conn
+	Conns   map[string]*Conn
 	Handler MessageHandler
 
 	// Optional params.
@@ -39,12 +37,12 @@ type Config struct {
 
 // Middle between a collection of websockets.
 type Middle struct {
-	conns      map[string]*connection
+	links      cmap
 	conf       *Config
 	raw        chan *Message
 	message    chan *Message
 	errors     chan error
-	unregister chan *connection
+	unregister chan *link
 }
 
 func (conf *Config) init() {
@@ -71,12 +69,17 @@ func (m Middle) handlerLoop() {
 	}()
 
 	for msg := range m.raw {
-		// FIXME
-		log.Println("Middle handle loop received a message.")
+		// FIXME: logging
+		log.Println("[wemdigo] Middle handle loop received a message.")
 		go func(msg *Message) {
 			pmsg, ok, err := m.conf.Handler(msg)
 			if err != nil {
-				m.errors <- err
+				// Non-blocking send to the Middle error chan. We only require
+				// a single handler error to terminate the Middle's run.
+				select {
+				case m.errors <- err:
+				default:
+				}
 				return
 			}
 
@@ -91,8 +94,8 @@ func (m Middle) handlerLoop() {
 // func (m *Middle) Add(ws *websocket.Conn, id string) {
 // 	m.register <-
 // }
-func (m *Middle) add(ws *websocket.Conn, id string) {
-	c := &connection{
+func (m *Middle) add(ws *Conn, id string) {
+	l := &link{
 		ws:   ws,
 		id:   id,
 		send: make(chan *Message),
@@ -100,52 +103,52 @@ func (m *Middle) add(ws *websocket.Conn, id string) {
 	}
 
 	if m.conf.ReadLimit != 0 {
-		c.ws.SetReadLimit(m.conf.ReadLimit)
+		l.ws.SetReadLimit(m.conf.ReadLimit)
 	}
 
-	m.conns[id] = c
+	m.links.set(id, l)
 }
 
 // Remove the websocket connection with the given id from the middle layer
 // and close the underlying websocket connection.
 func (m *Middle) remove(id string) {
-	if c, ok := m.conns[id]; ok {
-		m.unregister <- c
+	if l, ok := m.links.get(id); ok {
+		m.unregister <- l
 	} else {
-		log.Println("Connection with id =", id, "does not exist.")
+		log.Println("[wemdigo] Connection with id =", id, "does not exist.")
 	}
 }
 
-// Delete a connection from the Middle connections map.
-func (m *Middle) delete(c *connection) {
-	if _, ok := m.conns[c.id]; ok {
-		close(c.send)
-		delete(m.conns, c.id)
+// Delete a link from the Middle links map.
+func (m *Middle) delete(l *link) {
+	if l, ok := m.links.get(l.id); ok {
+		// This is the only time the send channel is closed.
+		close(l.send)
+		m.links.delete(l.id)
 	}
 }
 
 // send a the message to the connection with the specified id.
 func (m *Middle) send(msg *Message, id string) {
-	if c, ok := m.conns[id]; ok {
-		select {
-		case c.send <- msg:
-		default:
-			m.delete(c)
-		}
+	// Only try to re-route messages to connections the Middle controls.
+	if l, ok := m.links.get(id); ok {
+		// The link's writeLoop will read from l.send until the channel is closed,
+		// so it is safe to always send messages.
+		l.send <- msg
 	} else {
-		log.Println("Connection with id", id, "does not exist.")
+		log.Println("[wemdigo] Cannot send message to non-existent connection with id", id)
 	}
 }
 
 func (m Middle) Run() {
 	defer func() {
-		close(m.unregister)
+		// close(m.unregister)
 		close(m.raw)
 	}()
 
-	log.Println("Running middle.")
-	for _, conn := range m.conns {
-		conn.run()
+	log.Println("[wemdigo] Running middle.")
+	for _, l := range m.links.m {
+		l.run()
 	}
 
 	// Apply the message handler to incoming messages.
@@ -153,15 +156,16 @@ func (m Middle) Run() {
 
 	// Main event loop.
 	for {
-		log.Println("In main Middle event loop.")
+		log.Println("[wemdigo] In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
-		if len(m.conns) == 0 {
-			break
+		if m.links.isEmpty() {
+			log.Println("[wemdigo] No more connections remain.  Shutting down.")
+			return
 		}
 
 		select {
-
 		case msg := <-m.message:
+			log.Println("[wemdigo] Broadcasting message to:", msg.Destinations)
 			// Broadcast the processed message to destinations.
 			for _, id := range msg.Destinations {
 				m.send(msg, id)
@@ -169,16 +173,18 @@ func (m Middle) Run() {
 
 		case err := <-m.errors:
 			if err != nil {
-				log.Println("Message handler error:", err)
+				log.Println("[wemdigo] Message handler error:", err)
 				// Send a kill message to all connections.
-				for id := range m.conns {
-					control := &Message{Control: Kill}
-					m.send(control, id)
+				for id := range m.links.m {
+					msg := &Message{}
+					msg.SetCommand(Kill)
+					m.send(msg, id)
 				}
 			}
 
-		case c := <-m.unregister:
-			m.delete(c)
+		case l := <-m.unregister:
+			log.Println("[wemdigo] Unregistering link", l.id)
+			m.delete(l)
 		}
 	}
 
@@ -189,9 +195,9 @@ func New(conf Config) *Middle {
 	conf.init()
 
 	m := &Middle{
-		conns:      make(map[string]*connection, len(conf.Conns)),
+		links:      cmap{m: make(map[string]*link, len(conf.Conns))},
 		conf:       &conf,
-		unregister: make(chan *connection),
+		unregister: make(chan *link),
 		raw:        make(chan *Message),
 		message:    make(chan *Message),
 		errors:     make(chan error),

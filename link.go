@@ -29,7 +29,7 @@ func (l *link) readLoop() {
 
 		// FIXME we might not need to check the map first if we only ever
 		// delete a link when the Middle sees an unregistration.
-		if _, ok := l.mid.links[l.id]; ok {
+		if _, ok := l.mid.links.get(l.id); ok {
 			log.Println("[wemdigo] Link", l.id, "sending to unregister chan.")
 			l.mid.unregister <- l
 		}
@@ -57,13 +57,13 @@ func (l *link) readLoop() {
 	}
 }
 
-func (l *link) write(msg *Message) error {
+func (l *link) writeMessage(msg *Message) error {
 	l.ws.SetWriteDeadline(time.Now().Add(l.mid.conf.WriteWait))
 	log.Printf("[wemdigo] link %s writing message %#v", l.id, msg)
 	return l.ws.Write(msg)
 }
 
-func (l *link) writeRaw(messageType int, data []byte) error {
+func (l *link) write(messageType int, data []byte) error {
 	l.ws.SetWriteDeadline(time.Now().Add(l.mid.conf.WriteWait))
 	return l.ws.WriteMessage(messageType, data)
 }
@@ -83,26 +83,31 @@ func (l *link) writeLoop() {
 	}()
 	for {
 		select {
-		case message, ok := <-l.send:
+		case msg, ok := <-l.send:
 			if !ok {
-				l.writeRaw(websocket.CloseMessage, nil)
+				l.write(websocket.CloseMessage, nil)
 				return
 			}
 
-			// Deal with possible control messages.
-			switch message.Command() {
+			// Deal with possible Command messages.
+			switch msg.Command() {
 			case Kill:
-				l.writeRaw(websocket.CloseMessage, nil)
+				l.write(websocket.CloseMessage, nil)
 				return
+			case EncodeJSON:
+				if err := l.writeMessage(msg); err != nil {
+					return
+				}
+
 			default:
 				// No command value set, so no special processing required.
-				if err := l.write(message); err != nil {
+				if err := l.write(msg.Type, msg.Data); err != nil {
 					return
 				}
 			}
 
 		case <-ticker.C:
-			if err := l.writeRaw(websocket.PingMessage, nil); err != nil {
+			if err := l.write(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
