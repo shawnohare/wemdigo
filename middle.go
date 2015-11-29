@@ -5,9 +5,12 @@
 package wemdigo
 
 import (
-	"log"
 	"time"
+
+	"github.com/tj/go-debug"
 )
+
+var dlog = debug.Debug("wemdigo")
 
 // Config parameters used to create a new Middle instance.
 type Config struct {
@@ -69,8 +72,7 @@ func (m Middle) handlerLoop() {
 	}()
 
 	for msg := range m.raw {
-		// FIXME: logging
-		log.Println("[wemdigo] Middle handle loop received a message.")
+		dlog("Middle handle loop received a message.")
 		go func(msg *Message) {
 			pmsg, ok, err := m.conf.Handler(msg)
 			if err != nil {
@@ -115,7 +117,7 @@ func (m *Middle) remove(id string) {
 	if l, ok := m.links.get(id); ok {
 		m.unregister <- l
 	} else {
-		log.Println("[wemdigo] Connection with id =", id, "does not exist.")
+		dlog("Link with id = %s does not exist.", id)
 	}
 }
 
@@ -136,7 +138,7 @@ func (m *Middle) send(msg *Message, id string) {
 		// so it is safe to always send messages.
 		l.send <- msg
 	} else {
-		log.Println("[wemdigo] Cannot send message to non-existent connection with id", id)
+		dlog("Cannot send message to non-existent Link with id = %s", id)
 	}
 }
 
@@ -146,7 +148,6 @@ func (m Middle) Run() {
 		close(m.raw)
 	}()
 
-	log.Println("[wemdigo] Running middle.")
 	for _, l := range m.links.m {
 		l.run()
 	}
@@ -156,16 +157,16 @@ func (m Middle) Run() {
 
 	// Main event loop.
 	for {
-		log.Println("[wemdigo] In main Middle event loop.")
+		dlog("In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
 		if m.links.isEmpty() {
-			log.Println("[wemdigo] No more connections remain.  Shutting down.")
+			dlog("No more connections remain.  Shutting down.")
 			return
 		}
 
 		select {
 		case msg := <-m.message:
-			log.Println("[wemdigo] Broadcasting message to:", msg.Destinations)
+			dlog("Broadcasting message to: %s", msg.Destinations)
 			// Broadcast the processed message to destinations.
 			for _, id := range msg.Destinations {
 				m.send(msg, id)
@@ -173,7 +174,7 @@ func (m Middle) Run() {
 
 		case err := <-m.errors:
 			if err != nil {
-				log.Println("[wemdigo] Message handler error:", err)
+				dlog("Message handler error: %s", err.Error())
 				// Send a kill message to all connections.
 				for id := range m.links.m {
 					msg := &Message{}
@@ -183,7 +184,7 @@ func (m Middle) Run() {
 			}
 
 		case l := <-m.unregister:
-			log.Println("[wemdigo] Unregistering link", l.id)
+			dlog("Unregistering Link with id = %s", l.id)
 			m.delete(l)
 		}
 	}

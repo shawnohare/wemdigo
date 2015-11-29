@@ -2,7 +2,6 @@ package wemdigo
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/gorilla/websocket"
 )
@@ -21,7 +20,7 @@ func (c *Conn) Write(msg *Message) error {
 	msg.Meta.Encoded = true
 	payload, err := json.Marshal(msg)
 	if err != nil {
-		log.Println("[wemdigo] Could not marshal Message.")
+		dlog("Conn.Write: Could not marshal into a Message.")
 		payload = msg.Data
 	}
 	return c.WriteMessage(msg.Type, payload)
@@ -48,17 +47,17 @@ func (c *Conn) Read() (*Message, error) {
 	}
 
 	// FIXME
-	log.Println("[wemdigo] Raw payload from peer:", string(raw))
+	dlog("Raw payload from peer: %s", string(raw))
 	// First try to decode the raw bytes into a Message instance.
 	msg := Message{}
 	err = json.Unmarshal(raw, &msg)
 	if err == nil && msg.IsEncoded() {
-		log.Println("[wemdigo] Decoded message.")
+		dlog("Decoded raw payload into Message.")
 		return &msg, nil
 	}
 
 	// Otherwise, wrap the raw payload in a Message instance.
-	log.Println("[wemdigo] Could not decode into a Message type.")
+	dlog("Could not decode raw payload into a Message. Wrapping instead.")
 	msg.Type = mt
 	msg.Data = raw
 	return &msg, nil
