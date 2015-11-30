@@ -7,6 +7,7 @@ package wemdigo
 import (
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/tj/go-debug"
 )
 
@@ -15,7 +16,16 @@ var dlog = debug.Debug("wemdigo")
 // Config parameters used to create a new Middle instance.
 type Config struct {
 	// Required params.
-	Conns   map[string]*Conn
+	// FIXME: delete the conns and instead use groups?
+	// Consider not requiring the *Conn?  We can use them internally
+	// if we want, but probably shouldn't require them.
+	Conns map[string]*websocket.Conn
+	// Peers associates a connection id to a list of other websocket
+	// connection ids that it can communicate with. A connection will
+	// close if all of its peers have closed.
+	Peers map[string][]string
+
+	// Groups indicates which services
 	Handler MessageHandler
 
 	// Optional params.
@@ -61,6 +71,11 @@ func (conf *Config) init() {
 	}
 }
 
+func (m *Middle) SetHandler(f MessageHandler) {
+	// TODO: if nil, use default handler which broadcasts messages
+	// from one websocket to all other members of its group.
+}
+
 // handlerLoop watches for raw messages sent from the Middle's connections
 // and applies the message handler to each message in a separate goroutine.
 // The results, and any potential errors, and sent back to the Middle through
@@ -96,12 +111,18 @@ func (m Middle) handlerLoop() {
 // func (m *Middle) Add(ws *websocket.Conn, id string) {
 // 	m.register <-
 // }
-func (m *Middle) add(ws *Conn, id string) {
+func (m *Middle) addLink(ws *websocket.Conn, id string, peers []string) {
+	ps := m.PeerMap[id]
 	l := &link{
-		ws:   ws,
-		id:   id,
-		send: make(chan *Message),
-		mid:  m,
+		ws:    NewConn(ws),
+		id:    id,
+		peers: make(map[string]struct{}, ps),
+		send:  make(chan *Message),
+		mid:   m,
+	}
+
+	for _, id := range ps {
+		l.peers[id] = struct{}{}
 	}
 
 	if m.conf.ReadLimit != 0 {
@@ -206,7 +227,7 @@ func New(conf Config) *Middle {
 
 	// Create new connections from the underlying websockets.
 	for id, ws := range conf.Conns {
-		m.add(ws, id)
+		m.addLink(ws, id)
 	}
 	conf.Conns = nil
 

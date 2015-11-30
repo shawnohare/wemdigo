@@ -7,10 +7,11 @@ import (
 )
 
 type link struct {
-	ws   *Conn         // Underlying Gorilla websocket connection.
-	id   string        // Peer identifier for the websocket.
-	send chan *Message // Messages to write to the websocket.
-	mid  *Middle       // Middle instance to which the link belongs.
+	ws    *Conn               // Underlying Gorilla websocket connection.
+	id    string              // Peer identifier for the websocket.
+	peers map[string]struct{} // List of other connections the socket can talk to.
+	send  chan *Message       // Messages to write to the websocket.
+	mid   *Middle             // Middle instance to which the link belongs.
 }
 
 func (l *link) setReadDeadline() {
@@ -19,6 +20,19 @@ func (l *link) setReadDeadline() {
 		t = time.Now().Add(l.mid.conf.PongWait)
 	}
 	l.ws.SetReadDeadline(t)
+}
+
+// isAlone checks which of the link's peers are still registred with
+// the middle instance, removes any unregistered links, and reports
+// whether any peers still exist.
+func (l *link) isAlone() bool {
+	for id := range l.peers {
+		// Check to see that each peer is registered with the Middle.
+		if _, ok := l.mid.links.get(id); !ok {
+			delete(l.peers, id)
+		}
+	}
+	return len(l.peers) == 0
 }
 
 // readLoop pumps messages from the websocket link to the Middle.
@@ -44,6 +58,10 @@ func (l *link) readLoop() {
 	l.ws.SetPongHandler(ponghandler)
 
 	for {
+		if l.isAlone() {
+			return
+		}
+
 		msg, err := l.ws.Read()
 		if err != nil {
 			return
