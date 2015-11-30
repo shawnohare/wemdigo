@@ -113,7 +113,7 @@ func (m Middle) handlerLoop() {
 // }
 func (m *Middle) addLink(ws *websocket.Conn, id string, peers []string) {
 	l := &Link{
-		ws:   NewConn(ws),
+		ws:   ws,
 		id:   id,
 		send: make(chan *Message),
 		mid:  m,
@@ -187,9 +187,9 @@ func (m Middle) Run() {
 
 		select {
 		case msg := <-m.message:
-			dlog("Broadcasting message to: %s", msg.Destinations)
+			dlog("Broadcasting message to: %s", msg.destinations)
 			// Broadcast the processed message to destinations.
-			for _, id := range msg.Destinations {
+			for _, id := range msg.destinations {
 				m.send(msg, id)
 			}
 
@@ -198,8 +198,7 @@ func (m Middle) Run() {
 				dlog("Message handler error: %s", err.Error())
 				// Send a kill message to all connections.
 				for id := range m.Links.m {
-					msg := &Message{}
-					msg.SetCommand(Kill)
+					msg := &Message{close: true}
 					m.send(msg, id)
 				}
 			}

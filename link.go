@@ -111,6 +111,10 @@ func (l *Link) writeLoop() {
 				return
 			}
 
+			if msg.close {
+				return
+			}
+
 			if err := l.write(msg.Type, msg.Data); err != nil {
 				return
 			}
