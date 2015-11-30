@@ -7,11 +7,11 @@ import (
 )
 
 type Link struct {
-	ws    *Conn         // Underlying Gorilla websocket connection.
-	id    string        // Peer identifier for the websocket.
-	peers cmap          // List of other connections the socket can talk to.
-	send  chan *Message // Messages to write to the websocket.
-	mid   *Middle       // Middle instance to which the Link belongs.
+	ws    *websocket.Conn // Underlying Gorilla websocket connection.
+	id    string          // Peer identifier for the websocket.
+	peers cmap            // List of other connections the socket can talk to.
+	send  chan *Message   // Messages to write to the websocket.
+	mid   *Middle         // Middle instance to which the Link belongs.
 }
 
 func (l *Link) setReadDeadline() {
@@ -31,16 +31,6 @@ func (l *Link) updatePeers() {
 		}
 	}
 	l.peers.Unlock()
-}
-
-func (l *Link) Id() string {
-	return l.id
-}
-
-// Peers reports the ids of the currently active peers for this Link.
-func (l *Link) Peers() []string {
-	l.updatePeers()
-	return l.peers.linkIds()
 }
 
 // FIXME: add this func
@@ -84,22 +74,15 @@ func (l *Link) readLoop() {
 			return
 		}
 
-		msg, err := l.ws.Read()
+		mt, data, err := l.ws.ReadMessage()
 		if err != nil {
 			return
 		}
 		dlog("Link with id = %s read a message", l.id)
-		if msg.Origin == "" {
-			msg.Origin = l.id
-		}
+
+		msg := &Message{Type: mt, Data: data, origin: l}
 		l.mid.raw <- msg
 	}
-}
-
-func (l *Link) writeMessage(msg *Message) error {
-	l.ws.SetWriteDeadline(time.Now().Add(l.mid.conf.WriteWait))
-	dlog("Link with id = %s writing.", l.id)
-	return l.ws.Write(msg)
 }
 
 func (l *Link) write(messageType int, data []byte) error {
@@ -128,21 +111,8 @@ func (l *Link) writeLoop() {
 				return
 			}
 
-			// Deal with possible Command messages.
-			switch msg.Command() {
-			case Kill:
-				l.write(websocket.CloseMessage, nil)
+			if err := l.write(msg.Type, msg.Data); err != nil {
 				return
-			case EncodeJSON:
-				if err := l.writeMessage(msg); err != nil {
-					return
-				}
-
-			default:
-				// No command value set, so no special processing required.
-				if err := l.write(msg.Type, msg.Data); err != nil {
-					return
-				}
 			}
 
 		case <-ticker.C:
@@ -156,4 +126,16 @@ func (l *Link) writeLoop() {
 func (l *Link) run() {
 	go l.writeLoop()
 	go l.readLoop()
+}
+
+// ID reports the Link's user specified ID.  This ID corresponds to
+// it's ID in a Middle instance's map of Links.
+func (l *Link) ID() string {
+	return l.id
+}
+
+// Peers reports the ids of the currently active peers for this Link.
+func (l *Link) Peers() []string {
+	l.updatePeers()
+	return l.peers.linkIds()
 }
