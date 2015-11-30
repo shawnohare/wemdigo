@@ -50,12 +50,12 @@ type Config struct {
 
 // Middle between a collection of websockets.
 type Middle struct {
-	links      cmap
+	Links      cmap
 	conf       *Config
 	raw        chan *Message
 	message    chan *Message
 	errors     chan error
-	unregister chan *link
+	unregister chan *Link
 }
 
 func (conf *Config) init() {
@@ -112,50 +112,50 @@ func (m Middle) handlerLoop() {
 // 	m.register <-
 // }
 func (m *Middle) addLink(ws *websocket.Conn, id string, peers []string) {
-	ps := m.PeerMap[id]
-	l := &link{
-		ws:    NewConn(ws),
-		id:    id,
-		peers: make(map[string]struct{}, ps),
-		send:  make(chan *Message),
-		mid:   m,
+	l := &Link{
+		ws:   NewConn(ws),
+		id:   id,
+		send: make(chan *Message),
+		mid:  m,
 	}
 
-	for _, id := range ps {
-		l.peers[id] = struct{}{}
-	}
+	// TODO set peers somehow
+	// ps := m.conf.Peers[id]
+	// for _, id := range ps {
+	// 	l.peers[id] = struct{}{}
+	// }
 
 	if m.conf.ReadLimit != 0 {
 		l.ws.SetReadLimit(m.conf.ReadLimit)
 	}
 
-	m.links.set(id, l)
+	m.Links.set(id, l)
 }
 
 // Remove the websocket connection with the given id from the middle layer
 // and close the underlying websocket connection.
 func (m *Middle) remove(id string) {
-	if l, ok := m.links.get(id); ok {
+	if l, ok := m.Links.get(id); ok {
 		m.unregister <- l
 	} else {
 		dlog("Link with id = %s does not exist.", id)
 	}
 }
 
-// Delete a link from the Middle links map.
-func (m *Middle) delete(l *link) {
-	if l, ok := m.links.get(l.id); ok {
+// Delete a Link from the Middle Links map.
+func (m *Middle) delete(l *Link) {
+	if l, ok := m.Links.get(l.id); ok {
 		// This is the only time the send channel is closed.
 		close(l.send)
-		m.links.delete(l.id)
+		m.Links.delete(l.id)
 	}
 }
 
 // send a the message to the connection with the specified id.
 func (m *Middle) send(msg *Message, id string) {
 	// Only try to re-route messages to connections the Middle controls.
-	if l, ok := m.links.get(id); ok {
-		// The link's writeLoop will read from l.send until the channel is closed,
+	if l, ok := m.Links.get(id); ok {
+		// The Link's writeLoop will read from l.send until the channel is closed,
 		// so it is safe to always send messages.
 		l.send <- msg
 	} else {
@@ -169,7 +169,7 @@ func (m Middle) Run() {
 		close(m.raw)
 	}()
 
-	for _, l := range m.links.m {
+	for _, l := range m.Links.m {
 		l.run()
 	}
 
@@ -180,7 +180,7 @@ func (m Middle) Run() {
 	for {
 		dlog("In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
-		if m.links.isEmpty() {
+		if m.Links.isEmpty() {
 			dlog("No more connections remain.  Shutting down.")
 			return
 		}
@@ -197,7 +197,7 @@ func (m Middle) Run() {
 			if err != nil {
 				dlog("Message handler error: %s", err.Error())
 				// Send a kill message to all connections.
-				for id := range m.links.m {
+				for id := range m.Links.m {
 					msg := &Message{}
 					msg.SetCommand(Kill)
 					m.send(msg, id)
@@ -217,9 +217,9 @@ func New(conf Config) *Middle {
 	conf.init()
 
 	m := &Middle{
-		links:      cmap{m: make(map[string]*link, len(conf.Conns))},
+		Links:      cmap{m: make(map[string]*Link, len(conf.Conns))},
 		conf:       &conf,
-		unregister: make(chan *link),
+		unregister: make(chan *Link),
 		raw:        make(chan *Message),
 		message:    make(chan *Message),
 		errors:     make(chan error),
@@ -227,7 +227,7 @@ func New(conf Config) *Middle {
 
 	// Create new connections from the underlying websockets.
 	for id, ws := range conf.Conns {
-		m.addLink(ws, id)
+		m.addLink(ws, id, m.conf.Peers[id])
 	}
 	conf.Conns = nil
 
