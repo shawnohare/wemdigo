@@ -15,6 +15,7 @@ type Link struct {
 	ws    *websocket.Conn // Underlying Gorilla websocket connection.
 	wg    sync.WaitGroup
 	id    string        // Peer identifier for the websocket.
+	uid   uint64        // internal unique ID
 	peers cmap          // List of other connections the socket can talk to.
 	send  chan *Message // Messages to write to the websocket.
 	close chan struct{} // To tell the write loop it is finished.
@@ -178,6 +179,11 @@ func (l *Link) Conn() *websocket.Conn {
 // it's ID in a Middle instance's map of Links.
 func (l *Link) ID() string {
 	return l.id
+}
+
+// Middle layer the link is associated to.
+func (l *Link) Middle() *Middle {
+	return l.mid
 }
 
 // Peers reports the ids of the currently active peers for this Link.
