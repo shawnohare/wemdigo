@@ -52,7 +52,7 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Establish socket connection to the backend service.
 	addr := "localhost:8080"
-	path := "/record"
+	path := "/service"
 	u := url.URL{Scheme: "ws", Host: addr, Path: path}
 	log.Printf("connecting to %s", u.String())
 	server, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
