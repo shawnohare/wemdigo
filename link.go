@@ -1,6 +1,7 @@
 package wemdigo
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -8,10 +9,12 @@ import (
 
 type Link struct {
 	ws    *websocket.Conn // Underlying Gorilla websocket connection.
-	id    string          // Peer identifier for the websocket.
-	peers cmap            // List of other connections the socket can talk to.
-	send  chan *Message   // Messages to write to the websocket.
-	mid   *Middle         // Middle instance to which the Link belongs.
+	wg    sync.WaitGroup
+	id    string        // Peer identifier for the websocket.
+	peers cmap          // List of other connections the socket can talk to.
+	send  chan *Message // Messages to write to the websocket.
+	close chan struct{} // To tell the write loop it is finished.
+	mid   *Middle       // Middle instance to which the Link belongs.
 }
 
 func (l *Link) setReadDeadline() {
@@ -30,7 +33,6 @@ func (l *Link) setPeers(ps []string) {
 
 	if len(ps) == 0 {
 		// Set the peer list to every other connection.
-		ps = make([]string, len(l.mid.links.m)-1)
 		for id, l2 := range l.mid.links.m {
 			if id != l.id {
 				l.peers.m[id] = l2
@@ -93,9 +95,6 @@ func (l *Link) readLoop() {
 	l.ws.SetPongHandler(ponghandler)
 
 	for {
-		if l.isAlone() {
-			return
-		}
 
 		mt, data, err := l.ws.ReadMessage()
 		if err != nil {
@@ -115,9 +114,12 @@ func (l *Link) write(messageType int, data []byte) error {
 
 // writeLoop pumps messages from the Middle to the websocket Link.
 func (l *Link) writeLoop() {
-	ticker := time.NewTicker(l.mid.conf.pingPeriod)
+	pinger := time.NewTicker(l.mid.conf.pingPeriod)
+	pulse := time.NewTicker(30 * time.Second)
+
 	defer func() {
-		ticker.Stop()
+		pinger.Stop()
+		pulse.Stop()
 		l.ws.Close()
 		dlog("Link with id = %s no longer writing messages.", l.id)
 		// Drain any remaining messages that the Middle might send.
@@ -126,6 +128,7 @@ func (l *Link) writeLoop() {
 			continue
 		}
 	}()
+
 	for {
 		select {
 		case msg, ok := <-l.send:
@@ -134,18 +137,25 @@ func (l *Link) writeLoop() {
 				return
 			}
 
-			if msg.close {
-				return
-			}
-
 			if err := l.write(msg.Type, msg.Data); err != nil {
 				return
 			}
 
-		case <-ticker.C:
+		case <-pinger.C:
 			if err := l.write(websocket.PingMessage, nil); err != nil {
 				return
 			}
+
+		case <-pulse.C:
+			if l.peers.isEmpty() {
+				if _, ok := l.mid.links.get(l.id); ok {
+					l.mid.unregister <- l
+				}
+			}
+
+		case <-l.close:
+			dlog("Link with id = %s received on close channel.", l.id)
+			return
 		}
 	}
 }

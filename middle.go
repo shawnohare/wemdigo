@@ -5,6 +5,7 @@
 package wemdigo
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,10 +16,6 @@ var dlog = debug.Debug("wemdigo")
 
 // Config parameters used to create a new Middle instance.
 type Config struct {
-	// Required params.
-	// FIXME: delete the conns and instead use groups?
-	// Consider not requiring the *Conn?  We can use them internally
-	// if we want, but probably shouldn't require them.
 	Conns map[string]*websocket.Conn
 
 	// Peers associates a connection id to a list of other websocket
@@ -31,7 +28,6 @@ type Config struct {
 	// Optional message handler to initialize with.
 	Handler MessageHandler
 
-	// Optional params.
 	// PingPeriod specifies how often to ping the peer.  It determines
 	// a slightly longer pong wait time.
 	PingPeriod time.Duration
@@ -94,7 +90,26 @@ func (m Middle) handlerLoop() {
 
 	for msg := range m.raw {
 		dlog("Middle handle loop received a message.")
+
+		// Add one to each of the message origin's peer's wait group to
+		// inform the peer that there is a message processing that they might
+		// need to write.
+		msg.origin.peers.RLock()
+		for _, link := range msg.origin.peers.m {
+			link.wg.Add(1)
+		}
+		msg.origin.peers.RUnlock()
+
 		go func(msg *Message) {
+
+			defer func() {
+				msg.origin.peers.RLock()
+				for _, link := range msg.origin.peers.m {
+					link.wg.Done()
+				}
+				msg.origin.peers.RUnlock()
+			}()
+
 			pmsg, ok, err := m.handler(msg)
 			if err != nil {
 				// Non-blocking send to the Middle error chan. We only require
@@ -118,11 +133,14 @@ func (m Middle) handlerLoop() {
 // 	m.register <-
 // }
 func (m *Middle) addLink(ws *websocket.Conn, id string) {
+	var wg sync.WaitGroup
 	l := &Link{
-		ws:   ws,
-		id:   id,
-		send: make(chan *Message),
-		mid:  m,
+		ws:    ws,
+		wg:    wg,
+		id:    id,
+		send:  make(chan *Message),
+		close: make(chan struct{}),
+		mid:   m,
 	}
 
 	if l.mid.conf.readLimit != 0 {
@@ -142,12 +160,21 @@ func (m *Middle) remove(id string) {
 	}
 }
 
-// Delete a Link from the Middle Links map.
+// Delete a Link from the Middle Links map and commence shutdown operations
+// for the Link.
 func (m *Middle) delete(l *Link) {
+
+	// Only tell the Link to shutdown the first time we try to delete it.
 	if l, ok := m.links.get(l.id); ok {
-		// This is the only time the send channel is closed.
-		close(l.send)
 		m.links.delete(l.id)
+		// Wait until all current messages to the Link are sent, and then
+		// tell it to stop the write loop.
+		go func() {
+			l.wg.Wait()
+			l.close <- struct{}{}
+			close(l.send)
+			close(l.close)
+		}()
 	}
 }
 
@@ -157,7 +184,11 @@ func (m *Middle) send(msg *Message, id string) {
 	if l, ok := m.links.get(id); ok {
 		// The Link's writeLoop will read from l.send until the channel is closed,
 		// so it is safe to always send messages.
-		l.send <- msg
+		l.wg.Add(1)
+		go func() {
+			defer l.wg.Done()
+			l.send <- msg
+		}()
 	} else {
 		dlog("Cannot send message to non-existent Link with id = %s", id)
 	}
@@ -165,7 +196,7 @@ func (m *Middle) send(msg *Message, id string) {
 
 func (m Middle) Run() {
 	defer func() {
-		// close(m.unregister)
+		close(m.unregister)
 		close(m.raw)
 	}()
 
@@ -196,10 +227,11 @@ func (m Middle) Run() {
 		case err := <-m.errors:
 			if err != nil {
 				dlog("Message handler error: %s", err.Error())
-				// Send a kill message to all connections.
-				for id := range m.links.m {
-					msg := &Message{close: true}
-					m.send(msg, id)
+				// FIXME: Might need better error handling.
+				for _, link := range m.links.m {
+					go func() {
+						m.unregister <- link
+					}()
 				}
 			}
 
@@ -240,6 +272,7 @@ func New(conf Config) *Middle {
 		message:    make(chan *Message),
 		errors:     make(chan error),
 	}
+	m.SetHandler(conf.Handler)
 
 	// Create new connections from the underlying websockets.
 	for id, ws := range conf.Conns {

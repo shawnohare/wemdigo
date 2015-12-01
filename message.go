@@ -13,7 +13,6 @@ type Message struct {
 	origin *Link
 	// Destinations indicates the intended target websockets.
 	destinations []string
-	close        bool
 }
 
 func (msg *Message) Origin() *Link {
