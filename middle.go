@@ -16,16 +16,23 @@ var dlog = debug.Debug("wemdigo")
 
 // Config parameters used to create a new Middle instance.
 type Config struct {
+	// Conns is a map of websocket connection IDs to Gorilla websocket Conns.
+	//
 	Conns map[string]*websocket.Conn
 
-	// Peers associates a connection id to a list of other websocket
+	// Optional params
+	//
+	// Peers associates a connection ID to a list of other websocket
 	// connection IDs that it can communicate with. A connection will
 	// close if all of its peers have closed.  If a connection ID
 	// is not included in the Peers map, then it will have every other
 	// connection as a peer.
 	Peers map[string][]string
 
-	// Optional message handler to initialize with.
+	// Optional message handler to initialize with.  If this field is not
+	// set, then the package's default message handler will be used.
+	// The default handler simple broadcasts a message from
+	// a websocket to all of it's active peers.
 	Handler MessageHandler
 
 	// PingPeriod specifies how often to ping the peer.  It determines
@@ -194,6 +201,7 @@ func (m *Middle) send(msg *Message, id string) {
 	}
 }
 
+// Run a Middle layer until all of it's connections have closed.
 func (m Middle) Run() {
 	defer func() {
 		close(m.unregister)
@@ -243,6 +251,9 @@ func (m Middle) Run() {
 
 }
 
+// SetHandler will set the Middle layer's message handler to the input.
+// If the input is not specified, the package's default message handler
+// is used.
 func (m *Middle) SetHandler(f MessageHandler) {
 	// TODO: if nil, use default handler which broadcasts messages
 	// from one websocket to all other members of its group.
@@ -253,6 +264,7 @@ func (m *Middle) SetHandler(f MessageHandler) {
 	}
 }
 
+// New Middle instane with the specified configuration.
 func New(conf Config) *Middle {
 	// Expose certain aspects of the Middle layer to its connections.
 	mconf := &config{
