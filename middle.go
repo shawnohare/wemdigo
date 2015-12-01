@@ -226,12 +226,12 @@ func (m Middle) Run() {
 
 		select {
 		case msg := <-m.message:
-			dlog("Broadcasting message to: %s", msg.destinations)
 			// Broadcast the processed message to destinations.
 			// If none are set, broadcast to all peers.
 			if len(msg.destinations) == 0 {
 				msg.destinations = msg.Origin.Peers()
 			}
+			dlog("Broadcasting message to: %s", msg.destinations)
 			for _, id := range msg.destinations {
 				m.send(msg, id)
 			}
