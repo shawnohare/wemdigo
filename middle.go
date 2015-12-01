@@ -20,12 +20,15 @@ type Config struct {
 	// Consider not requiring the *Conn?  We can use them internally
 	// if we want, but probably shouldn't require them.
 	Conns map[string]*websocket.Conn
+
 	// Peers associates a connection id to a list of other websocket
-	// connection ids that it can communicate with. A connection will
-	// close if all of its peers have closed.
+	// connection IDs that it can communicate with. A connection will
+	// close if all of its peers have closed.  If a connection ID
+	// is not included in the Peers map, then it will have every other
+	// connection as a peer.
 	Peers map[string][]string
 
-	// Groups indicates which services
+	// Optional message handler to initialize with.
 	Handler MessageHandler
 
 	// Optional params.
@@ -48,32 +51,35 @@ type Config struct {
 	ReadLimit int64
 }
 
+type config struct {
+	pingPeriod time.Duration
+	pongWait   time.Duration
+	writeWait  time.Duration
+	readLimit  int64
+}
+
 // Middle between a collection of websockets.
 type Middle struct {
-	Links      cmap
-	conf       *Config
+	links      cmap
+	conf       *config
+	handler    MessageHandler
 	raw        chan *Message
 	message    chan *Message
 	errors     chan error
 	unregister chan *Link
 }
 
-func (conf *Config) init() {
+func (conf *config) init() {
 	// Process the config
-	if conf.PingPeriod == 0 {
-		conf.PingPeriod = 20 * time.Second
+	if conf.pingPeriod == 0 {
+		conf.pingPeriod = 20 * time.Second
 	}
-	if conf.WriteWait == 0 {
-		conf.WriteWait = 10 * time.Second
+	if conf.writeWait == 0 {
+		conf.writeWait = 10 * time.Second
 	}
-	if conf.PongWait == 0 {
-		conf.PongWait = 1 + ((10 * conf.PingPeriod) / 9)
+	if conf.pongWait == 0 {
+		conf.pongWait = 1 + ((10 * conf.pingPeriod) / 9)
 	}
-}
-
-func (m *Middle) SetHandler(f MessageHandler) {
-	// TODO: if nil, use default handler which broadcasts messages
-	// from one websocket to all other members of its group.
 }
 
 // handlerLoop watches for raw messages sent from the Middle's connections
@@ -89,7 +95,7 @@ func (m Middle) handlerLoop() {
 	for msg := range m.raw {
 		dlog("Middle handle loop received a message.")
 		go func(msg *Message) {
-			pmsg, ok, err := m.conf.Handler(msg)
+			pmsg, ok, err := m.handler(msg)
 			if err != nil {
 				// Non-blocking send to the Middle error chan. We only require
 				// a single handler error to terminate the Middle's run.
@@ -111,7 +117,7 @@ func (m Middle) handlerLoop() {
 // func (m *Middle) Add(ws *websocket.Conn, id string) {
 // 	m.register <-
 // }
-func (m *Middle) addLink(ws *websocket.Conn, id string, peers []string) {
+func (m *Middle) addLink(ws *websocket.Conn, id string) {
 	l := &Link{
 		ws:   ws,
 		id:   id,
@@ -119,23 +125,17 @@ func (m *Middle) addLink(ws *websocket.Conn, id string, peers []string) {
 		mid:  m,
 	}
 
-	// TODO set peers somehow
-	// ps := m.conf.Peers[id]
-	// for _, id := range ps {
-	// 	l.peers[id] = struct{}{}
-	// }
-
-	if m.conf.ReadLimit != 0 {
-		l.ws.SetReadLimit(m.conf.ReadLimit)
+	if l.mid.conf.readLimit != 0 {
+		l.ws.SetReadLimit(l.mid.conf.readLimit)
 	}
 
-	m.Links.set(id, l)
+	m.links.set(id, l)
 }
 
 // Remove the websocket connection with the given id from the middle layer
 // and close the underlying websocket connection.
 func (m *Middle) remove(id string) {
-	if l, ok := m.Links.get(id); ok {
+	if l, ok := m.links.get(id); ok {
 		m.unregister <- l
 	} else {
 		dlog("Link with id = %s does not exist.", id)
@@ -144,17 +144,17 @@ func (m *Middle) remove(id string) {
 
 // Delete a Link from the Middle Links map.
 func (m *Middle) delete(l *Link) {
-	if l, ok := m.Links.get(l.id); ok {
+	if l, ok := m.links.get(l.id); ok {
 		// This is the only time the send channel is closed.
 		close(l.send)
-		m.Links.delete(l.id)
+		m.links.delete(l.id)
 	}
 }
 
 // send a the message to the connection with the specified id.
 func (m *Middle) send(msg *Message, id string) {
 	// Only try to re-route messages to connections the Middle controls.
-	if l, ok := m.Links.get(id); ok {
+	if l, ok := m.links.get(id); ok {
 		// The Link's writeLoop will read from l.send until the channel is closed,
 		// so it is safe to always send messages.
 		l.send <- msg
@@ -169,7 +169,7 @@ func (m Middle) Run() {
 		close(m.raw)
 	}()
 
-	for _, l := range m.Links.m {
+	for _, l := range m.links.m {
 		l.run()
 	}
 
@@ -180,7 +180,7 @@ func (m Middle) Run() {
 	for {
 		dlog("In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
-		if m.Links.isEmpty() {
+		if m.links.isEmpty() {
 			dlog("No more connections remain.  Shutting down.")
 			return
 		}
@@ -197,7 +197,7 @@ func (m Middle) Run() {
 			if err != nil {
 				dlog("Message handler error: %s", err.Error())
 				// Send a kill message to all connections.
-				for id := range m.Links.m {
+				for id := range m.links.m {
 					msg := &Message{close: true}
 					m.send(msg, id)
 				}
@@ -211,13 +211,30 @@ func (m Middle) Run() {
 
 }
 
+func (m *Middle) SetHandler(f MessageHandler) {
+	// TODO: if nil, use default handler which broadcasts messages
+	// from one websocket to all other members of its group.
+	if f == nil {
+		m.handler = defaultHandler
+	} else {
+		m.handler = f
+	}
+}
+
 func New(conf Config) *Middle {
 	// Expose certain aspects of the Middle layer to its connections.
-	conf.init()
+	mconf := &config{
+		pingPeriod: conf.PingPeriod,
+		pongWait:   conf.PongWait,
+		writeWait:  conf.WriteWait,
+		readLimit:  conf.ReadLimit,
+	}
+
+	mconf.init()
 
 	m := &Middle{
-		Links:      cmap{m: make(map[string]*Link, len(conf.Conns))},
-		conf:       &conf,
+		links:      cmap{m: make(map[string]*Link, len(conf.Conns))},
+		conf:       mconf,
 		unregister: make(chan *Link),
 		raw:        make(chan *Message),
 		message:    make(chan *Message),
@@ -226,9 +243,13 @@ func New(conf Config) *Middle {
 
 	// Create new connections from the underlying websockets.
 	for id, ws := range conf.Conns {
-		m.addLink(ws, id, m.conf.Peers[id])
+		m.addLink(ws, id)
 	}
-	conf.Conns = nil
+
+	// Set the peers for each link.
+	for id, link := range m.links.m {
+		link.setPeers(conf.Peers[id])
+	}
 
 	return m
 }

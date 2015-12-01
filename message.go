@@ -36,3 +36,10 @@ func (msg *Message) SetDestinations(ds ...string) {
 // message should be forwarded, and a possible error.  An error will
 // cause the Middle layer to commence shutdown operations.
 type MessageHandler func(*Message) (*Message, bool, error)
+
+func defaultHandler(msg *Message) (*Message, bool, error) {
+	link := msg.Origin()
+	dests := link.Peers()
+	msg.SetDestinations(dests...)
+	return msg, true, nil
+}

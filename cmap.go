@@ -10,8 +10,8 @@ type cmap struct {
 
 func (cm cmap) get(key string) (*Link, bool) {
 	cm.RLock()
+	defer cm.RUnlock()
 	l, bool := cm.m[key]
-	cm.RUnlock()
 	return l, bool
 }
 
@@ -28,10 +28,9 @@ func (cm cmap) delete(key string) {
 }
 
 func (cm cmap) isEmpty() bool {
-	cm.Lock()
-	empty := len(cm.m) == 0
-	cm.Unlock()
-	return empty
+	cm.RLock()
+	defer cm.RUnlock()
+	return len(cm.m) == 0
 }
 
 func (cm cmap) linkIds() []string {

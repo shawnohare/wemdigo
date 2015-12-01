@@ -16,17 +16,40 @@ type Link struct {
 
 func (l *Link) setReadDeadline() {
 	var t time.Time
-	if l.mid.conf.PongWait != 0 {
-		t = time.Now().Add(l.mid.conf.PongWait)
+	if l.mid.conf.pongWait != 0 {
+		t = time.Now().Add(l.mid.conf.pongWait)
 	}
 	l.ws.SetReadDeadline(t)
+}
+
+// Initialize the set of peers.
+func (l *Link) setPeers(ps []string) {
+	l.peers = cmap{
+		m: make(map[string]*Link),
+	}
+
+	if len(ps) == 0 {
+		// Set the peer list to every other connection.
+		ps = make([]string, len(l.mid.links.m)-1)
+		for id, l2 := range l.mid.links.m {
+			if id != l.id {
+				l.peers.m[id] = l2
+			}
+		}
+	} else {
+		for _, id := range ps {
+			if l2, ok := l.mid.links.m[id]; ok {
+				l.peers.m[id] = l2
+			}
+		}
+	}
 }
 
 func (l *Link) updatePeers() {
 	l.peers.Lock()
 	for id := range l.peers.m {
 		// Check to see that each peer is registered with the Middle.
-		if _, ok := l.mid.Links.get(id); !ok {
+		if _, ok := l.mid.links.get(id); !ok {
 			delete(l.peers.m, id)
 		}
 	}
@@ -54,7 +77,7 @@ func (l *Link) readLoop() {
 
 		// FIXME we might not need to check the map first if we only ever
 		// delete a Link when the Middle sees an unregistration.
-		if _, ok := l.mid.Links.get(l.id); ok {
+		if _, ok := l.mid.links.get(l.id); ok {
 			dlog("Link with id = %s sending to unregister chan.", l.id)
 			l.mid.unregister <- l
 		}
@@ -86,13 +109,13 @@ func (l *Link) readLoop() {
 }
 
 func (l *Link) write(messageType int, data []byte) error {
-	l.ws.SetWriteDeadline(time.Now().Add(l.mid.conf.WriteWait))
+	l.ws.SetWriteDeadline(time.Now().Add(l.mid.conf.writeWait))
 	return l.ws.WriteMessage(messageType, data)
 }
 
 // writeLoop pumps messages from the Middle to the websocket Link.
 func (l *Link) writeLoop() {
-	ticker := time.NewTicker(l.mid.conf.PingPeriod)
+	ticker := time.NewTicker(l.mid.conf.pingPeriod)
 	defer func() {
 		ticker.Stop()
 		l.ws.Close()
@@ -130,6 +153,11 @@ func (l *Link) writeLoop() {
 func (l *Link) run() {
 	go l.writeLoop()
 	go l.readLoop()
+}
+
+// Conn returns the underlying Gorilla websocket connection for the Link.
+func (l *Link) Conn() *websocket.Conn {
+	return l.ws
 }
 
 // ID reports the Link's user specified ID.  This ID corresponds to
