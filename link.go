@@ -107,7 +107,7 @@ func (l *Link) readLoop() {
 		}
 		dlog("Link with id = %s read a message", l.id)
 
-		msg := &Message{Type: mt, Data: data, origin: l}
+		msg := &Message{Type: mt, Data: data, Origin: l}
 		l.mid.raw <- msg
 	}
 }

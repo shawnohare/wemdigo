@@ -10,21 +10,24 @@ type Message struct {
 	// Origin is the source of the message, and usually does not need to be
 	// set by users when creating message handlers.  The Middle hub will
 	// track the origin.
-	origin *Link
+	Origin *Link
 	// Destinations indicates the intended target websockets.
 	destinations []string
 }
 
-func (msg *Message) Origin() *Link {
-	return msg.origin
-}
-
-func (msg *Message) OriginID() string {
-	return msg.origin.ID()
-}
-
+// SetDestinations allows a user to specify by string ID the
+// message recipiants.  If this is not set, the message will be broadcast
+// to all websockets that are peers of the message's origin.
 func (msg *Message) SetDestinations(ds ...string) {
 	msg.destinations = ds
+}
+
+func NewMessage(messageType int, data []byte, origin *Link) *Message {
+	return &Message{
+		Type:   messageType,
+		Data:   data,
+		Origin: origin,
+	}
 }
 
 // MessageHandler funcs map raw WebSocket messages bound in a Message
@@ -37,7 +40,7 @@ func (msg *Message) SetDestinations(ds ...string) {
 type MessageHandler func(*Message) (*Message, bool, error)
 
 func defaultHandler(msg *Message) (*Message, bool, error) {
-	link := msg.Origin()
+	link := msg.Origin
 	dests := link.Peers()
 	msg.SetDestinations(dests...)
 	return msg, true, nil

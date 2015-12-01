@@ -98,23 +98,23 @@ func (m Middle) handlerLoop() {
 	for msg := range m.raw {
 		dlog("Middle handle loop received a message.")
 
-		// Add one to each of the message origin's peer's wait group to
+		// Add one to each of the message Origin's peer's wait group to
 		// inform the peer that there is a message processing that they might
 		// need to write.
-		msg.origin.peers.RLock()
-		for _, link := range msg.origin.peers.m {
+		msg.Origin.peers.RLock()
+		for _, link := range msg.Origin.peers.m {
 			link.wg.Add(1)
 		}
-		msg.origin.peers.RUnlock()
+		msg.Origin.peers.RUnlock()
 
 		go func(msg *Message) {
 
 			defer func() {
-				msg.origin.peers.RLock()
-				for _, link := range msg.origin.peers.m {
+				msg.Origin.peers.RLock()
+				for _, link := range msg.Origin.peers.m {
 					link.wg.Done()
 				}
-				msg.origin.peers.RUnlock()
+				msg.Origin.peers.RUnlock()
 			}()
 
 			pmsg, ok, err := m.handler(msg)
