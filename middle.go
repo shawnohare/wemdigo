@@ -85,56 +85,6 @@ func (conf *config) init() {
 	}
 }
 
-// handlerLoop watches for raw messages sent from the Middle's connections
-// and applies the message handler to each message in a separate goroutine.
-// The results, and any potential errors, and sent back to the Middle through
-// the appropriate channels.
-func (m Middle) handlerLoop() {
-	defer func() {
-		close(m.message)
-		close(m.errors)
-	}()
-
-	for msg := range m.raw {
-		dlog("Middle handle loop received a message.")
-
-		// Add one to each of the message Origin's peer's wait group to
-		// inform the peer that there is a message processing that they might
-		// need to write.
-		msg.Origin.peers.RLock()
-		for _, link := range msg.Origin.peers.m {
-			link.wg.Add(1)
-		}
-		msg.Origin.peers.RUnlock()
-
-		go func(msg *Message) {
-
-			defer func() {
-				msg.Origin.peers.RLock()
-				for _, link := range msg.Origin.peers.m {
-					link.wg.Done()
-				}
-				msg.Origin.peers.RUnlock()
-			}()
-
-			pmsg, ok, err := m.handler(msg)
-			if err != nil {
-				// Non-blocking send to the Middle error chan. We only require
-				// a single handler error to terminate the Middle's run.
-				select {
-				case m.errors <- err:
-				default:
-				}
-				return
-			}
-
-			if ok {
-				m.message <- pmsg
-			}
-		}(msg)
-	}
-}
-
 // add the Gorilla websocket connection to the Middle instance.
 // func (m *Middle) Add(ws *websocket.Conn, id string) {
 // 	m.register <-
@@ -201,6 +151,61 @@ func (m *Middle) send(msg *Message, id string) {
 	}
 }
 
+// handlerLoop watches for raw messages sent from the Middle's connections
+// and applies the message handler to each message in a separate goroutine.
+// The results, and any potential errors, and sent back to the Middle through
+// the appropriate channels.
+func (m Middle) handlerLoop() {
+	defer func() {
+		close(m.message)
+		close(m.errors)
+	}()
+
+	for msg := range m.raw {
+		dlog("Middle handle loop received a message.")
+
+		// Add one to each of the message Origin's peer's wait group to
+		// inform the peer that there is a message processing that they might
+		// need to write.
+		msg.Origin.peers.RLock()
+		for _, link := range msg.Origin.peers.m {
+			link.wg.Add(1)
+		}
+		msg.Origin.peers.RUnlock()
+
+		go func(msg *Message) {
+
+			defer func() {
+				msg.Origin.peers.RLock()
+				for _, link := range msg.Origin.peers.m {
+					link.wg.Done()
+				}
+				msg.Origin.peers.RUnlock()
+			}()
+
+			pmsg, ok, err := m.handler(msg)
+			if err != nil {
+				// Non-blocking send to the Middle error chan. We only require
+				// a single handler error to terminate the Middle's run.
+				select {
+				case m.errors <- err:
+				default:
+				}
+				return
+			}
+
+			if ok {
+				// Check to see whether the destinations have been set by the handler.
+				// If not, we provide the original peers.
+				if len(pmsg.destinations) == 0 {
+					pmsg.destinations = msg.Origin.Peers()
+				}
+				m.message <- pmsg
+			}
+		}(msg)
+	}
+}
+
 // Run a Middle layer until all of it's connections have closed.
 func (m Middle) Run() {
 	defer func() {
@@ -228,9 +233,6 @@ func (m Middle) Run() {
 		case msg := <-m.message:
 			// Broadcast the processed message to destinations.
 			// If none are set, broadcast to all peers.
-			if len(msg.destinations) == 0 {
-				msg.destinations = msg.Origin.Peers()
-			}
 			dlog("Broadcasting message to: %s", msg.destinations)
 			for _, id := range msg.destinations {
 				m.send(msg, id)

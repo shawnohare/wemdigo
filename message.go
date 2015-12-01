@@ -42,6 +42,6 @@ type MessageHandler func(*Message) (*Message, bool, error)
 func defaultHandler(msg *Message) (*Message, bool, error) {
 	link := msg.Origin
 	dests := link.Peers()
-	msg.SetDestinations(dests...)
+	msg.destinations = dests
 	return msg, true, nil
 }
