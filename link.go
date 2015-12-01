@@ -7,6 +7,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Link instances wrap a Gorilla websocket and provide a link to
+// a specific Middle instance.  The Link is responsible for keeping
+// the underlying websocket connection alive as well as reading / writing
+// messages.
 type Link struct {
 	ws    *websocket.Conn // Underlying Gorilla websocket connection.
 	wg    sync.WaitGroup
