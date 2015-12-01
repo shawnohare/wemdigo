@@ -12,8 +12,8 @@ to route messages from a front-end to multiple back-end microservices.
 
 ## Client-server middle layer example 
 
-As a minimal example, where the Middle layer blindly passes messages
-between a front-end client and a back-end service.
+A minimal example where the Middle layer blindly passes messages
+between a client and a backend service.
 
 ```go
 package main
