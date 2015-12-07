@@ -339,6 +339,7 @@ func (m Middle) Run() {
 	// Apply the message handler to incoming messages.
 	go m.handlerLoop()
 	go m.mainLoop()
+	dlog("Running a new Middle instance.")
 }
 
 // SetHandler will set the Middle layer's message handler to the input.
