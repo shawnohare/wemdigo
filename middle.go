@@ -5,149 +5,202 @@
 package wemdigo
 
 import (
+	"errors"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/tj/go-debug"
 )
 
 var dlog = debug.Debug("wemdigo")
 
-// Config parameters used to create a new Middle instance.
-type Config struct {
-	// Conns is a map of websocket connection IDs to Gorilla websocket Conns.
-	//
-	Conns map[string]*websocket.Conn
-
-	// Optional params
-	//
-	// Peers associates a connection ID to a list of other websocket
-	// connection IDs that it can communicate with. A connection will
-	// close if all of its peers have closed.  If a connection ID
-	// is not included in the Peers map, then it will have every other
-	// connection as a peer.
-	Peers map[string][]string
-
-	// Optional message handler to initialize with.  If this field is not
-	// set, then the package's default message handler will be used.
-	// The default handler simple broadcasts a message from
-	// a websocket to all of it's active peers.
-	Handler MessageHandler
-
-	// PingPeriod specifies how often to ping the peer.  It determines
-	// a slightly longer pong wait time.
-	PingPeriod time.Duration
-
-	// Pong Period specifies how long to wait for a pong response.  It
-	// should be longer than the PingPeriod.  If set to the default value,
-	// a new Middle layer will calculate PongWait from the PingPeriod.
-	// As such, this param does not usually need to be set.
-	PongWait time.Duration
-
-	// WriteWait is the time allowed to write a message to the peer.
-	// This does not usually need to be set by the user.
-	WriteWait time.Duration
-
-	// ReadLimit, if provided, will set an upper bound on message size.
-	// This value is the same as in the Gorilla websocket package.
-	ReadLimit int64
-}
-
-type config struct {
-	pingPeriod time.Duration
-	pongWait   time.Duration
-	writeWait  time.Duration
-	readLimit  int64
-}
+type connSet map[*Conn]struct{}
 
 // Middle between a collection of websockets.
 type Middle struct {
-	links      cmap
-	conf       *config
-	handler    MessageHandler
-	raw        chan *Message
-	message    chan *Message
-	errors     chan error
-	unregister chan *Link
+	conns     connSet
+	targets   map[string]*Conn // named connections
+	hubs      map[string]connSet
+	handler   MessageHandler
+	unhandled chan *Message
+	handled   chan *Message
+	regConn   chan *Conn
+	unreg0    chan *Conn // staging area for conns to unregister.
+	unreg     chan *Conn // conns ready to be terminated.
+	cmd       chan *evaluate
+	done      chan struct{}
+
+	// reg chan ConnConfig
+	// FIXME do we need these?
+	// regTarget chan string
+	// regHub  chan string
 }
 
-func (conf *config) init() {
-	// Process the config
-	if conf.pingPeriod == 0 {
-		conf.pingPeriod = 20 * time.Second
-	}
-	if conf.writeWait == 0 {
-		conf.writeWait = 10 * time.Second
-	}
-	if conf.pongWait == 0 {
-		conf.pongWait = 1 + ((10 * conf.pingPeriod) / 9)
-	}
+func (s connSet) add(c *Conn) {
+	s[c] = struct{}{}
 }
 
-// add the Gorilla websocket connection to the Middle instance.
-// func (m *Middle) Add(ws *websocket.Conn, id string) {
-// 	m.register <-
-// }
-func (m *Middle) addLink(ws *websocket.Conn, id string) {
-	var wg sync.WaitGroup
-	l := &Link{
-		ws:    ws,
-		wg:    wg,
-		id:    id,
-		send:  make(chan *Message),
-		close: make(chan struct{}),
-		mid:   m,
-	}
-
-	if l.mid.conf.readLimit != 0 {
-		l.ws.SetReadLimit(l.mid.conf.readLimit)
-	}
-
-	m.links.set(id, l)
-}
-
-// Remove the websocket connection with the given id from the middle layer
-// and close the underlying websocket connection.
-func (m *Middle) remove(id string) {
-	if l, ok := m.links.get(id); ok {
-		m.unregister <- l
-	} else {
-		dlog("Link with id = %s does not exist.", id)
+func (s connSet) merge(C connSet) {
+	for c := range C {
+		s.add(c)
 	}
 }
 
-// Delete a Link from the Middle Links map and commence shutdown operations
-// for the Link.
-func (m *Middle) delete(l *Link) {
-
-	// Only tell the Link to shutdown the first time we try to delete it.
-	if l, ok := m.links.get(l.id); ok {
-		m.links.delete(l.id)
-		// Wait until all current messages to the Link are sent, and then
-		// tell it to stop the write loop.
-		go func() {
-			l.wg.Wait()
-			l.close <- struct{}{}
-			close(l.send)
-			close(l.close)
-		}()
-	}
+func (s connSet) has(c *Conn) bool {
+	_, ok := s[c]
+	return ok
 }
 
-// send a the message to the connection with the specified id.
-func (m *Middle) send(msg *Message, id string) {
-	// Only try to re-route messages to connections the Middle controls.
-	if l, ok := m.links.get(id); ok {
-		// The Link's writeLoop will read from l.send until the channel is closed,
-		// so it is safe to always send messages.
-		l.wg.Add(1)
-		go func() {
-			defer l.wg.Done()
-			l.send <- msg
-		}()
-	} else {
-		dlog("Cannot send message to non-existent Link with id = %s", id)
+func (m Middle) hasTarget(key string) bool {
+	c, ok := m.targets[key]
+	if ok && m.conns.has(c) {
+		return true
+	}
+	return false
+}
+
+// isHealthy indicates whether the input connection should be removed from
+// the Middle's management.  Currently this will return true as long as
+// all of argument's connection dependencies are open.
+func (m *Middle) isHealthy(c *Conn) bool {
+	for _, key := range c.Deps() {
+		if !m.hasTarget(key) {
+			return false
+		}
+	}
+	return true
+}
+
+// register a fully initialized connection with the Middle instance.
+// This will add the connection to the appropriate sets.
+func (m *Middle) register(c *Conn) error {
+
+	// Add c as a target if it has a key and this target key is available.
+	// Otherwise, return a registration error.
+	if key, ok := c.Key(); ok {
+		t, prs := m.targets[key]
+		if !prs {
+			m.targets[key] = c
+		} else {
+			if t != c {
+				return errors.New(ErrTargetKeyInUse)
+			}
+		}
+	}
+
+	// Add the connection to the set of the Middle's maintained conns.
+	m.conns.add(c)
+
+	// Subscribe the connection to its targets' hubs.
+	for _, tkey := range c.Targets() {
+		_, prs := m.hubs[tkey]
+		if !prs {
+			m.hubs[tkey] = make(connSet)
+		}
+		m.hubs[tkey].add(c)
+	}
+
+	// Subscribe the connection to general hubs.
+	for _, tkey := range c.Hubs() {
+		_, prs := m.hubs[tkey]
+		if !prs {
+			m.hubs[tkey] = make(connSet)
+		}
+		m.hubs[tkey].add(c)
+	}
+
+	return nil
+}
+
+// unregister a connection from the Middle instance.  This will
+// delete the connection from the relevant sets and should only be
+// called from the main logic loop.
+func (m *Middle) unregister(c *Conn) error {
+	if !m.conns.has(c) {
+		return nil
+	}
+
+	var err error
+
+	// Check whether the conn is a target. If so, try to delete it from
+	// the set of target connections.
+	if key, ok := c.Key(); ok {
+		if c2, ok := m.targets[key]; ok {
+			if c != c2 {
+				err = errors.New(ErrTargetKeyInUse)
+			} else {
+				// Also delete the associated hub.
+				delete(m.targets, key)
+				delete(m.hubs, key)
+			}
+		}
+	}
+
+	// Remove the connection from its hubs.
+	for _, hkey := range c.Hubs() {
+		hub := m.hubs[hkey]
+		delete(hub, c) // safe even on nil maps
+	}
+
+	// Remove the connection from the Middle's connection set.
+	delete(m.conns, c)
+
+	c.done <- struct{}{}
+	close(c.done)
+	return err
+}
+
+// During a Middle heartbeat, unregister any unhealthy connections.
+func (m *Middle) unregisterUnhealthy() {
+}
+
+// destinations computes a set of Conns from the message's Destination field.
+func (m *Middle) destinations(msg *Message) connSet {
+	// When the message should be broadcast to everyone.
+	if msg.dest.broadcast {
+		return m.conns
+	}
+
+	s := make(connSet)
+	// Take the union over all specified hubs.
+	for _, k := range msg.dest.Hubs {
+		hub := m.hubs[k]
+		s.merge(hub)
+	}
+	// Add all specified targets.
+	for _, k := range msg.dest.Targets {
+		if conn, ok := m.targets[k]; ok {
+			s.add(conn)
+		}
+	}
+	// Add any special connections.
+	for _, conn := range msg.dest.conns {
+		s.add(conn)
+	}
+
+	return s
+}
+
+// TODO
+// send the message to the specified connection.
+func (m *Middle) send(msg *Message, c *Conn) {
+	dlog("Sending to conn %s", c.key)
+	c.wgRec.Add(1)
+	go func() {
+		defer c.wgRec.Done()
+		c.send <- msg
+	}()
+}
+
+// broadcast the message to the appropriate set of connections.
+func (m *Middle) broadcast(msg *Message) {
+	if msg == nil {
+		return
+	}
+
+	conns := m.destinations(msg)
+	for conn := range conns {
+		m.send(msg, conn)
 	}
 }
 
@@ -155,152 +208,207 @@ func (m *Middle) send(msg *Message, id string) {
 // and applies the message handler to each message in a separate goroutine.
 // The results, and any potential errors, and sent back to the Middle through
 // the appropriate channels.
-func (m Middle) handlerLoop() {
-	defer func() {
-		close(m.message)
-		close(m.errors)
-	}()
-
-	for msg := range m.raw {
-		dlog("Middle handle loop received a message.")
-
-		// Add one to each of the message Origin's peer's wait group to
-		// inform the peer that there is a message processing that they might
-		// need to write.
-		msg.Origin.peers.RLock()
-		for _, link := range msg.Origin.peers.m {
-			link.wg.Add(1)
+func (m *Middle) handlerLoop() {
+	var wg sync.WaitGroup
+	for msg := range m.unhandled {
+		if msg == nil {
+			continue
 		}
-		msg.Origin.peers.RUnlock()
 
-		go func(msg *Message) {
-
+		wg.Add(1)
+		msg.origin.wgSend.Add(1)
+		if msg == nil {
+			dlog("Message sent to unhandled chan is nil.")
+		}
+		go func(x *Message) {
 			defer func() {
-				msg.Origin.peers.RLock()
-				for _, link := range msg.Origin.peers.m {
-					link.wg.Done()
-				}
-				msg.Origin.peers.RUnlock()
+				wg.Done()
+				msg.origin.wgSend.Done()
 			}()
 
-			pmsg, ok, err := m.handler(msg)
-			if err != nil {
-				// Non-blocking send to the Middle error chan. We only require
-				// a single handler error to terminate the Middle's run.
-				select {
-				case m.errors <- err:
-				default:
-				}
+			pmsg := m.handler(x)
+			if pmsg == nil {
 				return
 			}
 
-			if ok {
-				// Check to see whether the destinations have been set by the handler.
-				// If not, we provide the original peers.
-				if len(pmsg.destinations) == 0 {
-					pmsg.destinations = msg.Origin.Peers()
-				}
-				m.message <- pmsg
+			if pmsg.origin == nil {
+				pmsg.origin = msg.origin
 			}
+
+			m.handled <- m.handler(x)
 		}(msg)
+	}
+
+	wg.Wait()
+	dlog("Closing Middle's handled channel.")
+	close(m.handled)
+}
+
+func (m *Middle) shutdown() {
+	for c := range m.conns {
+		m.unregister(c)
 	}
 }
 
-// Run a Middle layer until all of it's connections have closed.
-func (m Middle) Run() {
+// Shutdown the Middle layer and close all underlying websockets.
+func (m *Middle) Shutdown() {
+	if len(m.conns) == 0 {
+		return
+	}
+	select {
+	case m.done <- struct{}{}:
+	default:
+		return
+	}
+}
+
+func (m *Middle) mainLoop() {
+	pulse := time.NewTicker(30 * time.Second)
 	defer func() {
-		close(m.unregister)
-		close(m.raw)
+		pulse.Stop()
+		close(m.unreg0)
+		close(m.unreg)
+		close(m.unhandled)
 	}()
 
-	for _, l := range m.links.m {
-		l.run()
-	}
-
-	// Apply the message handler to incoming messages.
-	go m.handlerLoop()
-
-	// Main event loop.
 	for {
-		dlog("In main Middle event loop.")
 		// If at any point a Middle instance has no connections, begin shutdown.
-		if m.links.isEmpty() {
+		if len(m.conns) == 0 {
 			dlog("No more connections remain.  Shutting down.")
 			return
 		}
 
 		select {
-		case msg := <-m.message:
-			// Broadcast the processed message to destinations.
-			// If none are set, broadcast to all peers.
-			dlog("Broadcasting message to: %s", msg.destinations)
-			for _, id := range msg.destinations {
-				m.send(msg, id)
-			}
-
-		case err := <-m.errors:
-			if err != nil {
-				dlog("Message handler error: %s", err.Error())
-				// FIXME: Might need better error handling.
-				for _, link := range m.links.m {
+		case <-pulse.C:
+			// Check the health of each connection and unregister the sick.
+			for c := range m.conns {
+				if !m.isHealthy(c) {
+					dlog("Conn %s is unhealthy.  Staging for unregistration.", c.key)
 					go func() {
-						m.unregister <- link
+						m.unreg0 <- c
 					}()
 				}
 			}
-
-		case l := <-m.unregister:
-			dlog("Unregistering Link with id = %s", l.id)
-			m.delete(l)
+		case msg, ok := <-m.handled:
+			// A processed (handled) message has arrived.
+			if ok {
+				m.broadcast(msg)
+			}
+		case c := <-m.regConn:
+			// Register a new connection.
+			m.register(c)
+		case c := <-m.unreg0:
+			// Staging area for connections that will soon be unregistered.
+			// We attempt to let the connection write all pertinent messages
+			// before unregistering.
+			dlog("Conn %s is staging for unregistration.", c.key)
+			go func() {
+				c.wgRec.Wait()
+				m.unreg <- c
+			}()
+		case c := <-m.unreg:
+			// Unregister the connection.  Closes and websocket.
+			dlog("Conn %s unregistering.", c.key)
+			m.unregister(c)
+		case e := <-m.cmd:
+			e.eval()
+		case <-m.done:
+			// Stop processing messages.
+			dlog("Middle is shutting down.")
+			m.shutdown()
+			return
 		}
 	}
+}
 
+// InitConn will create a new Conn instance from the input config
+// that is set up appropriately for use with the middle instance.
+func (m *Middle) initConn(cc ConnConfig) *Conn {
+	c := NewConn()
+	c.Init(cc, m.unhandled, m.unreg)
+	return c
+}
+
+// FIXME: refactor to use names, etc.
+// Run a Middle layer until all of it's connections have closed.
+func (m Middle) Run() {
+	for c := range m.conns {
+		c.run()
+	}
+
+	// Apply the message handler to incoming messages.
+	go m.handlerLoop()
+	go m.mainLoop()
 }
 
 // SetHandler will set the Middle layer's message handler to the input.
 // If the input is not specified, the package's default message handler
 // is used.
 func (m *Middle) SetHandler(f MessageHandler) {
-	// TODO: if nil, use default handler which broadcasts messages
-	// from one websocket to all other members of its group.
 	if f == nil {
-		m.handler = defaultHandler
+		m.handler = DefaultMessageHandler
 	} else {
 		m.handler = f
 	}
 }
 
-// New Middle instane with the specified configuration.
+func (m *Middle) RegisterConn(cc ConnConfig) error {
+	f := func() error {
+		c := m.initConn(cc)
+		return m.register(c)
+	}
+	e := &evaluate{f: f}
+	m.cmd <- e
+	return <-e.err
+}
+
+func (m *Middle) Init(cconfs []ConnConfig, h MessageHandler, wsc *WSConfig) {
+	m.SetHandler(h)
+
+	// Crete, initialize, and register each connection with the Middle.
+	// This will add the Conn instances to the appropriate sets to which
+	// they belong.
+	for _, cc := range cconfs {
+		if wsc != nil && cc.WSConf == nil {
+			cc.WSConf = wsc
+		}
+		c := m.initConn(cc)
+		m.register(c)
+	}
+}
+
+// TODO add Register Service + Hub or should we assume these are static?
+// func (m *Middle) RegisterConn(conf ConnConfig) {
+
+// }
+// func (m *Middle) RegisterHub(id string, conns ...ConnConfig) {
+
+// }
+// func (m *Middle) RegisterService(ws *websocket.Conn, id string, conns ...ConnConfig) {
+// }
+
+// FIXME
+// func (m *Middle) AddService(ws *websocket.Conn, id string) {}
+// func (m *Middle) AddHub(id string) {}
+// func (m *Middle) AddTarget(ws *websocket.Conn, id string) {}
+
+func NewMiddle() *Middle {
+	return &Middle{
+		conns:     make(connSet),
+		targets:   make(map[string]*Conn),
+		hubs:      make(map[string]connSet),
+		unhandled: make(chan *Message),
+		handled:   make(chan *Message),
+		regConn:   make(chan *Conn),
+		unreg0:    make(chan *Conn),
+		unreg:     make(chan *Conn),
+		done:      make(chan struct{}),
+		cmd:       make(chan *evaluate),
+	}
+}
+
 func New(conf Config) *Middle {
-	// Expose certain aspects of the Middle layer to its connections.
-	mconf := &config{
-		pingPeriod: conf.PingPeriod,
-		pongWait:   conf.PongWait,
-		writeWait:  conf.WriteWait,
-		readLimit:  conf.ReadLimit,
-	}
-
-	mconf.init()
-
-	m := &Middle{
-		links:      cmap{m: make(map[string]*Link, len(conf.Conns))},
-		conf:       mconf,
-		unregister: make(chan *Link),
-		raw:        make(chan *Message),
-		message:    make(chan *Message),
-		errors:     make(chan error),
-	}
-	m.SetHandler(conf.Handler)
-
-	// Create new connections from the underlying websockets.
-	for id, ws := range conf.Conns {
-		m.addLink(ws, id)
-	}
-
-	// Set the peers for each link.
-	for id, link := range m.links.m {
-		link.setPeers(conf.Peers[id])
-	}
-
+	m := NewMiddle()
+	m.Init(conf.ConnConfigs, conf.Handler, conf.WSConf)
 	return m
 }
