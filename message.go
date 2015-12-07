@@ -1,8 +1,5 @@
 package wemdigo
 
-// TODO
-// - shoudl we allow a message to be forwarded and broadcast?
-
 // Message from a websocket intended to be processed and sent to other
 // websockets.
 type Message struct {

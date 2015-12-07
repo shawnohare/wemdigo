@@ -8,11 +8,7 @@ import (
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/tj/go-debug"
 )
-
-var dlog = debug.Debug("wemdigo")
 
 type connSet map[*Conn]struct{}
 
