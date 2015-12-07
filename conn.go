@@ -97,7 +97,6 @@ func (c *Conn) write(messageType int, data []byte) error {
 // readLoop pumps messages from the websocket Link to the Mkeydle.
 func (c *Conn) readLoop() {
 	defer func() {
-		dlog("Conn %s sending to unregister chan.", c.key)
 		c.ws.Close()
 		close(c.read)
 
@@ -168,6 +167,7 @@ func (c *Conn) mainLoop() {
 		case <-c.err:
 			// Websocket can no longer read.
 			if !c.unregSent {
+				dlog("Conn %s sending to unregister chan.", c.key)
 				c.unregSent = true
 				c.unreg <- c
 			}
