@@ -26,6 +26,11 @@ type Destination struct {
 	conns     []*Conn // send to a particular connection, i.e., for responses.
 }
 
+func (msg Message) OriginKey() string {
+	key, _ := msg.origin.Key()
+	return key
+}
+
 // Broadcast creates a response message which will be broadcast to all
 // websocket connections in the same Middle instance as the original sender.
 func (msg Message) Broadcast(messageType int, data []byte) *Message {
