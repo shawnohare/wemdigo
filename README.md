@@ -1,6 +1,4 @@
-# Wemdigo  
-
-[![GoDoc](https://godoc.org/github.com/shawnohare/wemdigo?status.svg)](http://godoc.org/github.com/shawnohare/wemdigo)
+# Wemdigo  [![GoDoc](https://godoc.org/github.com/shawnohare/wemdigo?status.svg)](http://godoc.org/github.com/shawnohare/wemdigo)
 **We**bsocket **M**i**d**dlelayer in **Go**.  
 
 This package makes the creation and managing of multiple Gorilla
