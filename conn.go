@@ -12,21 +12,23 @@ import (
 // the underlying websocket connection alive as well as reading / writing
 // messages.
 type Conn struct {
-	ws      *websocket.Conn // hkeye
-	wsConf  *WSConfig
-	wgSend  sync.WaitGroup
-	wgRec   sync.WaitGroup
-	key     string
-	deps    []string
-	hubs    []string
-	targets []string
+	ws        *websocket.Conn // hkeye
+	wsConf    *WSConfig
+	wgSend    sync.WaitGroup
+	wgRec     sync.WaitGroup
+	key       string
+	deps      []string
+	hubs      []string
+	targets   []string
+	unregSent bool
 	// Conn owned channels.
 	read chan *Message
 	send chan *Message // Messages to write to the websocket.
 	done chan struct{} // Terminates the main loop.
+	err  chan struct{} // Websocket error channel.
 	// Middle instance channels shared by all connections.
 	mid   chan *Message // Channel instance uses to speak to the Middle.
-	unreg chan *Conn
+	unreg chan *Conn    // Middle's unregistration channel.
 }
 
 func (c *Conn) Init(cc ConnConfig, mid chan *Message, unreg chan *Conn) {
@@ -47,6 +49,7 @@ func (c *Conn) Init(cc ConnConfig, mid chan *Message, unreg chan *Conn) {
 // NewConn to be initialized further by a Middle instance.
 func NewConn() *Conn {
 	return &Conn{
+		err:  make(chan struct{}),
 		read: make(chan *Message),
 		send: make(chan *Message),
 		done: make(chan struct{}),
@@ -103,7 +106,8 @@ func (c *Conn) readLoop() {
 		// connection's dependencies to close before having a chance to write
 		// all relevant messages.
 		c.wgSend.Wait()
-		c.unreg <- c
+		c.err <- struct{}{}
+		close(c.err)
 	}()
 
 	ponghandler := func(appData string) error {
@@ -162,6 +166,12 @@ func (c *Conn) mainLoop() {
 		case <-pinger.C:
 			msg := &Message{Type: websocket.PingMessage, Data: nil}
 			c.send <- msg
+		case <-c.err:
+			// Websocket can no longer read.
+			if !c.unregSent {
+				c.unregSent = true
+				c.unreg <- c
+			}
 		case <-c.done:
 			dlog("Conn %s received on done channel.", c.key)
 			return
