@@ -7,65 +7,108 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Link instances wrap a Gorilla websocket and provide a link to
-// a specific Middle instance.  The Link is responsible for keeping
+// Link instances wrap a Gorilla websocket and provkeye a link to
+// a specific Mkeydle instance.  The Link is responsible for keeping
 // the underlying websocket connection alive as well as reading / writing
 // messages.
 type Conn struct {
-	ws         *websocket.Conn // hide
-	wg         sync.WaitGroup
-	isService  bool               // For the user's convenience.
-	id         string             // Optional string identifier, if instance is a target.
-	deps       map[*Conn]struct{} // Conns on which the instance depends.
-	read       chan *Message
-	send       chan *Message // Messages to write to the websocket.
-	message    chan *Message // Channel the Middle uses to speak to the Conn.
-	unregister chan struct{}
-	done       chan struct{} // Terminates the main loop.
-	mid        *Middle       // Middle instance to which the Link belongs.
+	ws      *websocket.Conn // hkeye
+	wsConf  *WSConfig
+	wgSend  sync.WaitGroup
+	wgRec   sync.WaitGroup
+	key     string
+	deps    []string
+	hubs    []string
+	targets []string
+	// Conn owned channels.
+	read chan *Message
+	send chan *Message // Messages to write to the websocket.
+	done chan struct{} // Terminates the main loop.
+	// Middle instance channels shared by all connections.
+	mid   chan *Message // Channel instance uses to speak to the Middle.
+	unreg chan *Conn
 }
 
-// IsService reports whether the connection corresponds to some service.
-func (c Conn) IsService() bool {
-	return c.isService
+func (c *Conn) Init(cc ConnConfig, mid chan *Message, unreg chan *Conn) {
+	c.ws = cc.Conn
+	if cc.WSConf == nil {
+		cc.WSConf = new(WSConfig)
+		cc.WSConf.init()
+	}
+	c.key = cc.Key
+	c.hubs = cc.Hubs
+	c.targets = cc.Targets
+	c.deps = cc.Deps
+	c.wsConf = cc.WSConf
+	c.mid = mid
+	c.unreg = unreg
 }
+
+// NewConn to be initialized further by a Middle instance.
+func NewConn() *Conn {
+	return &Conn{
+		read: make(chan *Message),
+		send: make(chan *Message),
+		done: make(chan struct{}),
+	}
+}
+
+// Key returns the connection's key keyentifier and a bool indicating
+// whether this value is set.  If the boolean is false, then this
+// connection is not indirectly targetable.
+func (c Conn) Key() (string, bool) {
+	return c.key, c.key != ""
+}
+
+// HasKey reports whether the underlying connection is targetable.
+func (c Conn) HasKey() bool {
+	_, ok := c.Key()
+	return ok
+}
+
+// Targets the connection subscribes to.
+func (c *Conn) Targets() []string { return c.targets }
+
+// Hugs the target subscribes to.
+func (c *Conn) Hubs() []string { return c.hubs }
+
+// Deps are target connections on which the instance depends.
+func (c *Conn) Deps() []string { return c.deps }
 
 // UnderlyingConn returns the underlying Gorilla websocket connection.
-func (c Conn) UnderlyingConn() *websocket.Conn {
-	return c.ws
-}
-
-// ID associated to this connection.
-func (c Conn) ID() string {
-	return c.id
-}
+func (c Conn) UnderlyingConn() *websocket.Conn { return c.ws }
 
 func (c *Conn) setReadDeadline() {
 	var t time.Time
-	if c.mid.conf.pongWait != 0 {
-		t = time.Now().Add(c.mid.conf.pongWait)
+	if c.wsConf.PongWait != 0 {
+		t = time.Now().Add(c.wsConf.PongWait)
 	}
 	c.ws.SetReadDeadline(t)
 }
 
 func (c *Conn) write(messageType int, data []byte) error {
-	c.ws.SetWriteDeadline(time.Now().Add(c.mid.conf.writeWait))
+	c.ws.SetWriteDeadline(time.Now().Add(c.wsConf.WriteWait))
 	return c.ws.WriteMessage(messageType, data)
 }
 
-// readLoop pumps messages from the websocket Link to the Middle.
+// readLoop pumps messages from the websocket Link to the Mkeydle.
 func (c *Conn) readLoop() {
 	defer func() {
-		dlog("Conn %s sending to unregister chan.", c.id)
-		c.unregister <- struct{}{}
+		dlog("Conn %s sending to unregister chan.", c.key)
 		c.ws.Close()
-		close(c.unregister)
 		close(c.read)
+
+		// Wait until all sent messages have been evaluated by the handler
+		// before unregistering with the Middle, as we do not want the
+		// connection's dependencies to close before having a chance to write
+		// all relevant messages.
+		c.wgSend.Wait()
+		c.unreg <- c
 	}()
 
 	ponghandler := func(appData string) error {
 		c.setReadDeadline()
-		dlog("Conn %s saw a pong.", c.id)
+		dlog("Conn %s saw a pong.", c.key)
 		return nil
 	}
 
@@ -76,7 +119,7 @@ func (c *Conn) readLoop() {
 		if err != nil {
 			return
 		}
-		dlog("Conn %s read a message", c.id)
+		dlog("Conn %s read a message", c.key)
 		msg := &Message{Type: mt, Data: data, origin: c}
 		c.read <- msg
 	}
@@ -89,7 +132,7 @@ func (c *Conn) writeLoop() {
 	defer func() {
 		c.write(websocket.CloseMessage, nil)
 		c.ws.Close()
-		dlog("Conn %s no longer writing messages.", c.id)
+		dlog("Conn %s no longer writing messages.", c.key)
 	}()
 
 	for msg := range c.send {
@@ -99,11 +142,11 @@ func (c *Conn) writeLoop() {
 	}
 }
 
-// main loop handles all communication with the Middle layer.  Messages
+// main loop handles all communication with the Mkeydle layer.  Messages
 // read by the underlying websocket and those to be written by it
 // are first funneled through here.
 func (c *Conn) mainLoop() {
-	pinger := time.NewTicker(c.mid.conf.pingPeriod)
+	pinger := time.NewTicker(c.wsConf.PingPeriod)
 	defer func() {
 		c.ws.Close()
 		pinger.Stop()
@@ -112,15 +155,15 @@ func (c *Conn) mainLoop() {
 
 	for {
 		select {
-		case msg := <-c.read:
-			c.mid.raw <- msg
-		case msg := <-c.message:
-			c.send <- msg
+		case msg, ok := <-c.read:
+			if ok {
+				c.mid <- msg
+			}
 		case <-pinger.C:
 			msg := &Message{Type: websocket.PingMessage, Data: nil}
 			c.send <- msg
 		case <-c.done:
-			dlog("Conn %s received on done channel.", c.id)
+			dlog("Conn %s received on done channel.", c.key)
 			return
 		}
 	}
