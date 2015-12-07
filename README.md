@@ -62,20 +62,24 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Specify the wemdigo Middle-layer configuration.  This
 	// Configuration does not specify a Message handler function,
-	// so the package's default one is used. The Peers field is set
-	// so that the the Middle layer will automatically close one websocket
-	// connection when the other has closed. For this example, the Peer
-	// field can be omitted for the same effect.
+	// so the package's default one is used.  The client connection
+  // will automatically close when the server connection closes, due
+  // to the Deps setting.
 	conf := wemdigo.Config{
-		Conns: map[string]*websocket.Conn{
-			"client": client,
-			"server": server,
+		ConnConfigs: []wemdigo.ConnConfig{
+			{
+				Conn:    client,
+				Key:     "client",
+				Targets: []string{"server"},
+				Deps:    []string{"server"},
+			},
+			{
+				Conn:    server,
+				Key:     "server",
+				Targets: []string{"client"},
+			},
 		},
-		Peers: map[string][]string{
-			"client": {"server"},
-			"server": {"client"},
-		},
-		PingPeriod: 20 * time.Second,
+		Handler: rm.messageHandler,
 	}
 	m := wemdigo.New(conf)
 	m.Run()
