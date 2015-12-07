@@ -1,9 +1,6 @@
-# Wemdigo  
+# Wemdigo  [![GoDoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godoc.org/shawnohare/wemdigo)
 
 **We**bsocket **M**i**d**dlelayer in **Go**.  
-
-[Docs](https://godoc.org/github.com/shawnohare/wemdigo)
-
 
 This package makes the creation and managing of multiple Gorilla
 WebSocket connections easier, while also allowing for intermediate
