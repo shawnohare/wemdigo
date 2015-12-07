@@ -25,7 +25,7 @@ type Conn struct {
 	read chan *Message
 	send chan *Message // Messages to write to the websocket.
 	done chan struct{} // Terminates the main loop.
-	err  chan struct{} // Websocket error channel.
+	err  chan struct{} // Weboscket + Middle error channel.
 	// Middle instance channels shared by all connections.
 	mid   chan *Message // Channel instance uses to speak to the Middle.
 	unreg chan *Conn    // Middle's unregistration channel.
@@ -107,7 +107,6 @@ func (c *Conn) readLoop() {
 		// all relevant messages.
 		c.wgSend.Wait()
 		c.err <- struct{}{}
-		close(c.err)
 	}()
 
 	ponghandler := func(appData string) error {

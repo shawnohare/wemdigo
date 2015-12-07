@@ -285,7 +285,7 @@ func (m *Middle) mainLoop() {
 				if !m.isHealthy(c) {
 					dlog("Conn %s is unhealthy.  Staging for unregistration.", c.key)
 					go func() {
-						m.unreg0 <- c
+						c.err <- struct{}{}
 					}()
 				}
 			}
