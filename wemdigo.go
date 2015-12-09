@@ -6,7 +6,16 @@ import (
 )
 
 func logger() func(string, ...interface{}) {
-	if os.Getenv("DEBUG") == "wemdigo" {
+	debug := os.Getenv("DEBUG")
+	modes := strings.Split(debug, ",")
+	var ok bool
+	for _, mode := range modes {
+		if mode == "wemdigo" {
+			ok = true
+			break
+		}
+	}
+	if ok {
 		f := func(format string, v ...interface{}) {
 			wemdigoStr := "\033[0;32m" + "wemdigo" + "\033[0m "
 			log.Printf(wemdigoStr+format, v...)
