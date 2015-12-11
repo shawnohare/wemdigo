@@ -19,6 +19,32 @@ a backend service is created and these two websockets are linked. **Note**
 that in this example, each time a HTTP request is upgraded, a new 
 Middle layer between the client and server is created.
 
+### Isolated example
+
+```go
+// client and server vars are previously declared *websocket.Conn instances
+conf := wemdigo.Config{
+  ConnConfigs: []wemdigo.ConnConfig{
+    {
+      Conn:    client,
+      Key:     "client",
+      Targets: []string{"server"},
+      Deps:    []string{"server"},
+    },
+    {
+      Conn:    server,
+      Key:     "server",
+      Targets: []string{"client"},
+    },
+  },
+  Handler: rm.messageHandler,
+}
+m := wemdigo.New(conf)
+m.Run()
+```
+
+### Complete example
+
 ```go
 package main
 
@@ -64,9 +90,9 @@ func ServiceHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("dial:", err)
 	}
 
-	// Specify the wemdigo Middle-layer configuration.  This
-	// Configuration does not specify a Message handler function,
-	// so the package's default one is used.  The client connection
+  // Specify the wemdigo Middle-layer configuration.  This
+  // Configuration does not specify a Message handler function,
+  // so the package's default one is used.  The client connection
   // will automatically close when the server connection closes, due
   // to the Deps setting.
 	conf := wemdigo.Config{
